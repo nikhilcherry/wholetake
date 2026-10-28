@@ -1,0 +1,14 @@
+[Unit]
+Description=Wholetake On-Chain Anchor Daemon (Base Sepolia EAS + OpenTimestamps)
+After=network-online.target wholetake-chain.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/wholetake
+ExecStart=%h/Projects/wholetake/py -m anchor run
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
