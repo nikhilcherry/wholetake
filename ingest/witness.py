@@ -22,6 +22,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 import wave
 from datetime import datetime, timezone
@@ -32,6 +33,8 @@ BYTES_PER_S = RATE * 2
 STALL_S = 30           # no audio for this long = the stream is dead, reconnect
 MIN_TAIL_S = 1.0       # shorter leftovers at a drop are not worth a chunk (they still fall inside the gap)
 BACKOFF = [5, 10, 20, 40, 60]
+OPTIN_EVERY_S = 3600   # re-check the creator's claim code this often while live
+OPTIN_GRACE_S = 7200   # if a re-check can't reach YouTube, a code seen this recently still counts
 
 BIN = Path(sys.executable).parent  # streamlink lives in the same venv
 
@@ -73,8 +76,11 @@ def stop(procs):
 
 
 class Witness:
-    def __init__(self, src, name, chunk_s, root):
+    def __init__(self, src, name, chunk_s, root, optin=True):
         self.src, self.name, self.chunk_s = src, name, chunk_s
+        self.optin = optin and not Path(src).exists()  # local test files have no channel to consent
+        self.optin_ok_at = None  # last time the claim code was seen
+        self.revoked = False
         self.dir = Path(root) / name
         self.dir.mkdir(parents=True, exist_ok=True)
         done = sorted(self.dir.glob("[0-9]*.json"))
@@ -84,6 +90,37 @@ class Witness:
         self.down_since = last.get("received_utc_unix") or last.get("to_utc_unix")
         self.down_reason = "witness offline"
         self.session = 0
+
+    def consent(self):
+        """True = code present, False = code absent (revoked / never claimed), None = couldn't check."""
+        from ingest import optin
+        try:
+            r = optin.check(self.src)
+        except Exception as e:
+            r = {"ok": None, "error": str(e)[:300], "url": self.src, "checked_utc": optin.utc_now()}
+        optin.log_check(self.dir, r)
+        if r["ok"]:
+            self.optin_ok_at = time.time()
+        print(f"opt-in check: {'present' if r['ok'] else 'ABSENT' if r['ok'] is False else 'unreachable'}"
+              + (f" ({r.get('code')} in {r['where']})" if r["ok"] else ""), flush=True)
+        return r["ok"]
+
+    def allowed(self):
+        """Gate before every connect: never witness a channel that hasn't (or no longer has) the code up."""
+        if not self.optin:
+            return True
+        if self.optin_ok_at and time.time() - self.optin_ok_at < OPTIN_EVERY_S:
+            return True
+        ok = self.consent()
+        if ok is False:
+            self.revoked = True
+        return bool(ok) or (ok is None and self.optin_ok_at is not None and time.time() - self.optin_ok_at < OPTIN_GRACE_S)
+
+    def recheck_loop(self, stop_evt):
+        while not stop_evt.wait(OPTIN_EVERY_S):
+            if self.consent() is False:
+                self.revoked = True
+                return
 
     def emit_gap(self, until):
         if self.down_since is None:
@@ -129,11 +166,14 @@ class Witness:
                 if until is not None and now >= until:
                     self.down_reason = "witness stopped"
                     break
+                if self.revoked:
+                    self.down_reason = "creator opted out"
+                    break
                 if now - last >= STALL_S:
                     self.down_reason = f"stalled >{STALL_S}s"
                     break
                 wait = STALL_S - (now - last) if until is None else min(STALL_S - (now - last), until - now)
-                ready, _, _ = select.select([out], [], [], wait)
+                ready, _, _ = select.select([out], [], [], min(wait, 5))  # wake up to notice an opt-out
                 if not ready:
                     continue
                 last = time.time()
@@ -159,11 +199,23 @@ class Witness:
 
     def run(self, until=None):
         tries = 0
+        stop_evt = threading.Event()
+        if self.optin:
+            threading.Thread(target=self.recheck_loop, args=(stop_evt,), daemon=True).start()
         while until is None or time.time() < until:
-            if self.run_session(until):
+            if not self.allowed():
+                if self.revoked:
+                    print("claim code not on the channel: not witnessing (add it to the bio, then restart)", flush=True)
+                    break
+                self.down_reason = "opt-in check unreachable"
+                self.down_since = self.down_since or time.time()
+            elif self.run_session(until):
                 tries = 0
             else:
                 self.down_since = self.down_since or time.time()
+            if self.revoked:
+                print("creator removed the claim code: witnessing stopped", flush=True)
+                break
             if until is not None and time.time() >= until:
                 break
             wait = BACKOFF[min(tries, len(BACKOFF) - 1)]
@@ -172,6 +224,7 @@ class Witness:
             if until is not None and time.time() + wait >= until:
                 break
             time.sleep(wait)
+        stop_evt.set()
 
 
 def main():
@@ -181,9 +234,10 @@ def main():
     ap.add_argument("--chunk", type=float, default=60, help="chunk length in seconds (default 60)")
     ap.add_argument("--secs", type=float, help="stop after this many seconds (default: forever)")
     ap.add_argument("--root", default="data/witness")
+    ap.add_argument("--no-optin", action="store_true", help="skip the claim-code check (our own test streams only)")
     a = ap.parse_args()
 
-    w = Witness(a.src, a.name, a.chunk, a.root)
+    w = Witness(a.src, a.name, a.chunk, a.root, optin=not a.no_optin)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # turns into SystemExit, so finally blocks flush
     try:
         w.run(until=time.time() + a.secs if a.secs else None)
