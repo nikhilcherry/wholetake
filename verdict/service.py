@@ -3,6 +3,7 @@
     ./py -m verdict serve [--port 8790]
     ./py -m verdict check <url-or-file> [--out verdict.json]
 """
+import hashlib
 import json
 import os
 import queue
@@ -16,8 +17,9 @@ from typing import Callable
 from ingest.chain import canonical_json, sha256_bytes, utc_now, write_atomic
 from verdict.compose import compose_verdict
 from verdict.detect import run_detector
-from verdict.fetch import SSRFError, fetch, validate_public_url
+from verdict.fetch import SSRFError, clips_root, fetch, validate_public_url
 from verdict.label import label_cuts
+from verdict.page import render_verdict_page
 from verdict.proofs import build_proofs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -171,6 +173,7 @@ class VerdictManager:
             "created_utc": now,
             "updated_utc": now,
             "clip_sha256": None,
+            "clip_wav": None,
             "witness_heads": None,
             "result": None,
             "error": None,
@@ -195,6 +198,20 @@ class VerdictManager:
             if job is None:
                 return None
             return dict(job)
+
+    def resolve_clip_wav(self, job: dict) -> Path | None:
+        wav = job.get("clip_wav")
+        if isinstance(wav, str) and wav:
+            p = Path(wav)
+            if p.exists() and p.is_file():
+                return p
+        url = str(job.get("url") or "").strip()
+        if url:
+            key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+            cand = clips_root() / key / "clip.wav"
+            if cand.exists() and cand.is_file():
+                return cand
+        return None
 
     def list_jobs(self, limit: int = 20) -> list[dict]:
         with self._lock:
@@ -226,13 +243,20 @@ class VerdictManager:
                     job_id,
                     "done",
                     clip_sha256=clip_info["sha256"],
+                    clip_wav=str(clip_info.get("wav") or ""),
                     witness_heads=heads,
                     result=cached,
                     error=None,
                 )
                 return
 
-            self._set_status(job_id, "detecting", clip_sha256=clip_info["sha256"], witness_heads=heads)
+            self._set_status(
+                job_id,
+                "detecting",
+                clip_sha256=clip_info["sha256"],
+                clip_wav=str(clip_info.get("wav") or ""),
+                witness_heads=heads,
+            )
             detection = self.detect_fn(clip_info["wav"], self.witness_root)
             proofs = build_proofs(detection, self.witness_root)
 
@@ -247,6 +271,7 @@ class VerdictManager:
                 job_id,
                 "done",
                 clip_sha256=clip_info["sha256"],
+                clip_wav=str(clip_info.get("wav") or ""),
                 witness_heads=heads,
                 result=verdict,
                 error=None,
@@ -287,6 +312,14 @@ def make_handler(manager: VerdictManager):
             self.end_headers()
             self.wfile.write(raw)
 
+        def _send_html(self, code: int, html_str: str) -> None:
+            raw = html_str.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
         def do_GET(self) -> None:
             parsed = urllib.parse.urlsplit(self.path)
             path = parsed.path.rstrip("/")
@@ -323,6 +356,43 @@ def make_handler(manager: VerdictManager):
                     cors=True,
                 )
                 return
+
+            if path.startswith("/v/"):
+                tail = path.split("/v/", 1)[1]
+                parts = [p for p in tail.split("/") if p]
+                if len(parts) == 1:
+                    job = manager.get_job(parts[0])
+                    if job is None:
+                        self._send_html(404, "<!doctype html><html><body><h1>404 Not Found</h1></body></html>")
+                        return
+                    html_doc = render_verdict_page(job, manager.witness_root)
+                    self._send_html(200, html_doc)
+                    return
+
+                if len(parts) == 2 and parts[1] == "verdict.json":
+                    job = manager.get_job(parts[0])
+                    if job is None or not isinstance(job.get("result"), dict):
+                        self._send_json(404, {"error": "verdict.json not found"}, cors=True)
+                        return
+                    self._send_json(200, job["result"], cors=True)
+                    return
+
+                if len(parts) == 2 and parts[1] == "clip.wav":
+                    job = manager.get_job(parts[0])
+                    if job is None:
+                        self._send_json(404, {"error": "job not found"}, cors=False)
+                        return
+                    wav_path = manager.resolve_clip_wav(job)
+                    if wav_path is None:
+                        self._send_json(404, {"error": "clip.wav not found"}, cors=False)
+                        return
+                    data = wav_path.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
 
             self._send_json(404, {"error": "not found"}, cors=True)
 

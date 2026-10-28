@@ -1,0 +1,20 @@
+[Unit]
+Description=Wholetake X Reply Bot
+After=network-online.target wholetake-verdict.service
+Wants=network-online.target wholetake-verdict.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/wholetake
+Environment="X_API_BASE=http://127.0.0.1:8791"
+Environment="X_BOT_TOKEN=sim-wholetake"
+Environment="WT_VERDICT_URL=http://127.0.0.1:8790"
+Environment="WT_PAGE_BASE=http://127.0.0.1:8790"
+Environment="BOT_POLL_S=5"
+Environment="BOT_INCLUDE_LINK=1"
+ExecStart=%h/Projects/wholetake/py -m bot run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

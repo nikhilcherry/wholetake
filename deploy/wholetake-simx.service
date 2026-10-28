@@ -1,0 +1,14 @@
+[Unit]
+Description=Wholetake Simulated X Server (simx)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wholetake
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/opt/wholetake/.venv/bin/python -m simx serve --port 8791 --data /opt/wholetake/data/simx
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

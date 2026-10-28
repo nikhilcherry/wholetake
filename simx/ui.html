@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X · Wholetake Demo</title>
+<style>
+  :root {
+    --bg: #000000;
+    --card: #16181c;
+    --border: #2f3336;
+    --text: #e7e9ea;
+    --muted: #71767b;
+    --accent: #1d9bf0;
+    --accent-hover: #1a8cd8;
+    --hover: rgba(231, 233, 234, 0.06);
+    --highlight: rgba(29, 155, 240, 0.22);
+    --danger: #f4212e;
+  }
+  html.light {
+    --bg: #ffffff;
+    --card: #f7f9f9;
+    --border: #eff3f4;
+    --text: #0f1419;
+    --muted: #536471;
+    --accent: #1d9bf0;
+    --accent-hover: #1a8cd8;
+    --hover: rgba(15, 20, 25, 0.05);
+    --highlight: rgba(29, 155, 240, 0.16);
+    --danger: #f4212e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .shell {
+    max-width: 1240px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 245px minmax(0, 600px) 340px;
+    min-height: 100vh;
+  }
+  @media (max-width: 1020px) {
+    .shell { grid-template-columns: 76px minmax(0, 600px) 1fr; }
+    .nav-label, .switcher-meta { display: none; }
+  }
+  @media (max-width: 700px) {
+    .shell { grid-template-columns: 1fr; }
+    .left-rail, .right-rail { display: none; }
+  }
+
+  .left-rail {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .brand {
+    width: 48px;
+    height: 48px;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    font-weight: 800;
+    cursor: pointer;
+    user-select: none;
+  }
+  .brand:hover { background: var(--hover); }
+  .nav-list {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 14px;
+    border-radius: 999px;
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--text);
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    text-align: left;
+  }
+  .nav-item:hover { background: var(--hover); }
+  .nav-icon { width: 24px; height: 24px; fill: currentColor; flex-shrink: 0; }
+
+  .feed-col {
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    min-height: 100vh;
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .topbar-title {
+    font-size: 19px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .back-btn {
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 18px;
+  }
+  .back-btn:hover { background: var(--hover); }
+
+  .actor-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .actor-select {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    color: #fff;
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .av-nikhil { background: #2563eb; }
+  .av-shreyas { background: #7c3aed; }
+  .av-clipper { background: #ea580c; }
+  .av-newsdesk { background: #dc2626; }
+  .av-wholetake { background: #0d9488; }
+
+  .composer {
+    display: flex;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .composer-body { flex: 1; min-width: 0; }
+  .composer textarea {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    outline: none;
+    color: var(--text);
+    font-size: 18px;
+    font-family: inherit;
+    resize: none;
+    min-height: 62px;
+  }
+  .composer textarea::placeholder { color: var(--muted); }
+  .video-preview-wrap {
+    position: relative;
+    margin: 8px 0;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: #000;
+  }
+  .video-preview-wrap video {
+    width: 100%;
+    max-height: 320px;
+    display: block;
+  }
+  .remove-video-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(15, 20, 25, 0.78);
+    color: #fff;
+    border: 0;
+    border-radius: 999px;
+    width: 30px;
+    height: 30px;
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .composer-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .composer-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tool-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--accent);
+    background: transparent;
+    border: 0;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .tool-btn:hover { background: rgba(29, 155, 240, 0.12); }
+  .char-count {
+    font-size: 13px;
+    color: var(--muted);
+    margin-right: 10px;
+  }
+  .char-count.over { color: var(--danger); font-weight: 700; }
+  .post-btn {
+    background: var(--accent);
+    color: #fff;
+    border: 0;
+    border-radius: 999px;
+    padding: 8px 18px;
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .post-btn:hover { background: var(--accent-hover); }
+  .post-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .tweet {
+    display: flex;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    transition: background-color 0.6s ease;
+    cursor: pointer;
+  }
+  .tweet:hover { background: var(--hover); }
+  .tweet.flash-new {
+    animation: pulseHighlight 2.6s ease-out;
+  }
+  @keyframes pulseHighlight {
+    0% { background-color: var(--highlight); }
+    100% { background-color: transparent; }
+  }
+  .tweet-main { flex: 1; min-width: 0; }
+  .tweet-head {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .tweet-name { font-weight: 700; font-size: 15px; color: var(--text); }
+  .tweet-handle, .tweet-time { font-size: 14px; color: var(--muted); }
+  .automated-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 1px;
+    margin-bottom: 4px;
+  }
+  .reply-context {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .tweet-text {
+    font-size: 15px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    margin-top: 4px;
+  }
+  .tweet.focal .tweet-text {
+    font-size: 19px;
+    line-height: 1.45;
+    margin-top: 10px;
+  }
+  .tweet-media {
+    margin-top: 10px;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: #000;
+  }
+  .tweet-media video {
+    width: 100%;
+    max-height: 380px;
+    display: block;
+  }
+  .quoted-box {
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--card) 55%, transparent);
+  }
+  .tweet-actions {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    margin-top: 10px;
+  }
+  .act-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .act-btn:hover {
+    color: var(--accent);
+    background: rgba(29, 155, 240, 0.12);
+  }
+  .inline-box {
+    margin-top: 10px;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    cursor: default;
+  }
+
+  .right-rail {
+    padding: 12px 20px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+  .card h3 {
+    margin: 0 0 10px 0;
+    font-size: 18px;
+    font-weight: 800;
+  }
+  .who-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+  }
+  .who-row:first-of-type { border-top: 0; }
+  .who-bio {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 3px;
+  }
+  .empty-state {
+    padding: 48px 20px;
+    text-align: center;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="left-rail">
+    <div>
+      <div class="brand" id="navBrand" title="Home">𝕏</div>
+      <div class="nav-list">
+        <button class="nav-item" id="navHome">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 3.1L2 11.2V21h7v-6h6v6h7v-9.8L12 3.1z"/></svg>
+          <span class="nav-label">Home</span>
+        </button>
+        <button class="nav-item" id="navTheme">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 3a9 9 0 109 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 01-4.4 2.26 5.403 5.403 0 01-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+          <span class="nav-label" id="themeLabel">Light mode</span>
+        </button>
+      </div>
+    </div>
+    <div class="actor-bar switcher-meta">
+      <span>Simulated X · Local Demo</span>
+    </div>
+  </aside>
+
+  <main class="feed-col">
+    <header class="topbar">
+      <div class="topbar-title">
+        <button class="back-btn" id="backBtn" style="display:none" title="Back to Home">←</button>
+        <span id="viewTitle">Home</span>
+      </div>
+      <div class="actor-bar">
+        <div class="avatar av-nikhil" id="activeAvatar" style="width:28px;height:28px;font-size:11px;">NA</div>
+        <span>Posting as</span>
+        <select class="actor-select" id="actorSelect" aria-label="Posting as user"></select>
+      </div>
+    </header>
+
+    <section class="composer" id="mainComposer">
+      <div class="avatar av-nikhil" id="composerAvatar">NA</div>
+      <div class="composer-body">
+        <textarea id="composerText" placeholder="What is happening?!"></textarea>
+        <div id="videoPreviewContainer" style="display:none" class="video-preview-wrap">
+          <video id="videoPreview" controls muted></video>
+          <button type="button" class="remove-video-btn" id="removeVideoBtn" title="Remove video">✕</button>
+        </div>
+        <div class="composer-footer">
+          <div class="composer-tools">
+            <input type="file" id="videoInput" accept="video/mp4,video/*" style="display:none">
+            <button type="button" class="tool-btn" id="attachVideoBtn">
+              <span>🎬 Attach MP4</span>
+            </button>
+            <button type="button" class="tool-btn" id="askBotQuickBtn" title="Insert @wholetake mention">
+              <span>@wholetake</span>
+            </button>
+          </div>
+          <div>
+            <span class="char-count" id="charCount">280</span>
+            <button type="button" class="post-btn" id="postBtn" disabled>Post</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="feedContainer"></div>
+  </main>
+
+  <aside class="right-rail">
+    <div class="card">
+      <h3>Who's checking clips</h3>
+      <div class="who-row">
+        <div class="avatar av-wholetake">W</div>
+        <div>
+          <div class="tweet-name">Wholetake</div>
+          <div class="tweet-handle">@wholetake</div>
+          <div class="automated-badge">🤖 Automated by @nikhil</div>
+          <div class="who-bio">Automated · checks clips against witnessed livestreams · operated by @nikhil · reply 'stop' to opt out</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Demo flow</h3>
+      <div class="who-bio">
+        1. Switch to <b>ClipFarm 🔥 (@clipper)</b> and post a clipped video.<br><br>
+        2. Switch to <b>Nikhil AV (@nikhil)</b> and reply <code>@wholetake is this real?</code><br><br>
+        3. Watch <b>@wholetake</b> reply live with the timestamped transcript diff and on-chain anchor.
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+(() => {
+  const state = {
+    users: [],
+    activeUser: localStorage.getItem("simx_user") || "nikhil",
+    tweets: [],
+    knownIds: new Set(),
+    firstLoadDone: false,
+    route: { mode: "home", statusId: null },
+    openInline: null, // { tweetId, mode: 'reply'|'quote', text: '' }
+    attachedFile: null,
+  };
+
+  function initials(name) {
+    // Only words that start with a letter or digit: "ClipFarm 🔥" -> "C", not "C" + half a surrogate pair.
+    const words = (name || "?").split(/\s+/).filter(w => /^[\p{L}\p{N}]/u.test(w));
+    return (words.slice(0, 2).map(w => Array.from(w)[0]).join("") || "?").toUpperCase();
+  }
+
+  function avatarClass(username) {
+    return "avatar av-" + (username || "nikhil").toLowerCase();
+  }
+
+  function escapeHtml(str) {
+    return String(str || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function linkify(text) {
+    const safe = escapeHtml(text);
+    return safe
+      // URLs first (like X, they open in a new tab); text is already escaped, so the href can't break out
+      .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|[^A-Za-z0-9_\/])(@[A-Za-z0-9_]+)/g, '$1<a href="/" onclick="return false">$2</a>')
+      .replace(/(^|[^A-Za-z0-9_])(#[A-Za-z0-9_]+)/g, '$1<a href="/" onclick="return false">$2</a>');
+  }
+
+  function relTime(iso) {
+    const d = new Date(iso).getTime();
+    if (isNaN(d)) return "";
+    const diff = Math.max(0, Math.floor((Date.now() - d) / 1000));
+    if (diff < 5) return "now";
+    if (diff < 60) return diff + "s";
+    if (diff < 3600) return Math.floor(diff / 60) + "m";
+    if (diff < 86400) return Math.floor(diff / 3600) + "h";
+    return Math.floor(diff / 86400) + "d";
+  }
+
+  function syncRouteFromUrl() {
+    const p = window.location.pathname;
+    if (p.startsWith("/status/")) {
+      state.route = { mode: "status", statusId: p.slice("/status/".length).split("/")[0] };
+    } else {
+      state.route = { mode: "home", statusId: null };
+    }
+    document.getElementById("backBtn").style.display = state.route.mode === "status" ? "inline-block" : "none";
+    document.getElementById("viewTitle").textContent = state.route.mode === "status" ? "Post" : "Home";
+    document.getElementById("mainComposer").style.display = state.route.mode === "status" ? "none" : "flex";
+  }
+
+  function navigate(path) {
+    window.history.pushState({}, "", path);
+    syncRouteFromUrl();
+    renderFeed();
+  }
+
+  window.addEventListener("popstate", () => {
+    syncRouteFromUrl();
+    renderFeed();
+  });
+
+  function updateActorUI() {
+    const sel = document.getElementById("actorSelect");
+    if (sel.options.length === 0 && state.users.length > 0) {
+      for (const u of state.users) {
+        const opt = document.createElement("option");
+        opt.value = u.username;
+        opt.textContent = `${u.name} (@${u.username})`;
+        sel.appendChild(opt);
+      }
+    }
+    sel.value = state.activeUser;
+    const u = state.users.find(x => x.username === state.activeUser) || { name: state.activeUser, username: state.activeUser };
+    for (const id of ["activeAvatar", "composerAvatar"]) {
+      const el = document.getElementById(id);
+      el.className = avatarClass(u.username);
+      el.textContent = initials(u.name);
+    }
+  }
+
+  function renderTweetNode(t, isFocal = false, isNewHighlight = false) {
+    const article = document.createElement("article");
+    article.className = "tweet" + (isFocal ? " focal" : "") + (isNewHighlight ? " flash-new" : "");
+    article.dataset.tweetId = t.id;
+
+    const av = document.createElement("div");
+    av.className = avatarClass(t.author.username);
+    av.textContent = initials(t.author.name);
+
+    const main = document.createElement("div");
+    main.className = "tweet-main";
+
+    let headHtml = `
+      <div class="tweet-head">
+        <span class="tweet-name">${escapeHtml(t.author.name)}</span>
+        <span class="tweet-handle">@${escapeHtml(t.author.username)}</span>
+        <span class="tweet-time">· ${escapeHtml(relTime(t.created_at))}</span>
+      </div>
+    `;
+    if (t.author.automated) {
+      headHtml += `<div class="automated-badge">🤖 Automated</div>`;
+    }
+    if (t.replied_to && t.replied_to.author) {
+      headHtml += `<div class="reply-context">Replying to <a href="/status/${encodeURIComponent(t.replied_to.id)}" data-nav="/status/${encodeURIComponent(t.replied_to.id)}">@${escapeHtml(t.replied_to.author.username)}</a></div>`;
+    }
+    headHtml += `<div class="tweet-text">${linkify(t.text)}</div>`;
+
+    if (t.media && t.media.length > 0) {
+      const vurl = t.media[0].variants && t.media[0].variants[0] ? t.media[0].variants[0].url : "";
+      if (vurl) {
+        headHtml += `
+          <div class="tweet-media">
+            <video src="${escapeHtml(vurl)}" controls preload="metadata"></video>
+          </div>
+        `;
+      }
+    }
+
+    if (t.quoted) {
+      headHtml += `
+        <div class="quoted-box" data-nav="/status/${encodeURIComponent(t.quoted.id)}">
+          <div class="tweet-head">
+            <span class="tweet-name">${escapeHtml(t.quoted.author.name)}</span>
+            <span class="tweet-handle">@${escapeHtml(t.quoted.author.username)}</span>
+          </div>
+          <div class="tweet-text">${linkify(t.quoted.text)}</div>
+        </div>
+      `;
+    }
+
+    headHtml += `
+      <div class="tweet-actions">
+        <button type="button" class="act-btn" data-action="reply" data-id="${escapeHtml(t.id)}">
+          💬 <span>${t.reply_count || 0}</span> <span style="margin-left:2px">Reply</span>
+        </button>
+        <button type="button" class="act-btn" data-action="quote" data-id="${escapeHtml(t.id)}">
+          🔁 <span>${t.quote_count || 0}</span> <span style="margin-left:2px">Quote</span>
+        </button>
+      </div>
+    `;
+
+    main.innerHTML = headHtml;
+    article.appendChild(av);
+    article.appendChild(main);
+
+    if (state.openInline && state.openInline.tweetId === t.id) {
+      main.appendChild(buildInlineComposer(t));
+    }
+
+    article.addEventListener("click", (e) => {
+      if (e.target.closest("button, video, textarea, input, .inline-box")) return;
+      const navTarget = e.target.closest("[data-nav]");
+      if (navTarget) {
+        e.preventDefault();
+        navigate(navTarget.getAttribute("data-nav"));
+        return;
+      }
+      navigate("/status/" + t.id);
+    });
+
+    for (const btn of main.querySelectorAll("button[data-action]")) {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const act = btn.getAttribute("data-action");
+        const prefill = act === "reply"
+          ? `@${t.author.username} @wholetake is this real?`
+          : `@wholetake check this clip`;
+        state.openInline = { tweetId: t.id, mode: act, text: prefill };
+        renderFeed();
+      });
+    }
+
+    return article;
+  }
+
+  function buildInlineComposer(targetTweet) {
+    const box = document.createElement("div");
+    box.className = "inline-box";
+    const modeLabel = state.openInline.mode === "reply"
+      ? `Replying to @${targetTweet.author.username}`
+      : `Quoting @${targetTweet.author.username}`;
+
+    box.innerHTML = `
+      <div class="reply-context">${escapeHtml(modeLabel)}</div>
+      <textarea id="inlineTextarea" rows="2" style="width:100%;background:transparent;border:0;outline:none;color:var(--text);font-size:15px;font-family:inherit;resize:vertical;"></textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+        <span class="char-count" id="inlineCharCount">280</span>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="tool-btn" id="inlineCancelBtn">Cancel</button>
+          <button type="button" class="post-btn" id="inlineSendBtn">Post</button>
+        </div>
+      </div>
+    `;
+    const ta = box.querySelector("#inlineTextarea");
+    const cc = box.querySelector("#inlineCharCount");
+    const sendBtn = box.querySelector("#inlineSendBtn");
+    ta.value = state.openInline.text || "";
+
+    function syncCount() {
+      state.openInline.text = ta.value;
+      const rem = 280 - ta.value.length;
+      cc.textContent = String(rem);
+      cc.className = "char-count" + (rem < 0 ? " over" : "");
+      sendBtn.disabled = ta.value.trim().length === 0 || rem < 0;
+    }
+    ta.addEventListener("input", syncCount);
+    syncCount();
+
+    box.querySelector("#inlineCancelBtn").addEventListener("click", () => {
+      state.openInline = null;
+      renderFeed();
+    });
+
+    sendBtn.addEventListener("click", async () => {
+      sendBtn.disabled = true;
+      const payload = {
+        username: state.activeUser,
+        text: ta.value,
+      };
+      if (state.openInline.mode === "reply") {
+        payload.in_reply_to_tweet_id = targetTweet.id;
+      } else {
+        payload.quote_tweet_id = targetTweet.id;
+      }
+      await fetch("/sim/post", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      state.openInline = null;
+      await pollTimeline(true);
+    });
+
+    setTimeout(() => {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }, 0);
+    return box;
+  }
+
+  function renderFeed(newlyArrivedIds = new Set()) {
+    const container = document.getElementById("feedContainer");
+
+    // Preserve active inline composer focus if user is typing
+    if (state.openInline && document.activeElement && document.activeElement.id === "inlineTextarea") {
+      if (newlyArrivedIds.size === 0) return;
+    }
+
+    // Preserve any playing video elements so polling doesn't interrupt playback
+    const playingVideos = container.querySelectorAll("video");
+    for (const v of playingVideos) {
+      if (!v.paused) return;
+    }
+
+    container.innerHTML = "";
+
+    if (state.route.mode === "status") {
+      const focus = state.tweets.find(x => x.id === state.route.statusId);
+      if (!focus) {
+        container.innerHTML = `<div class="empty-state">Post not found.</div>`;
+        return;
+      }
+      const convId = focus.conversation_id;
+      const thread = state.tweets
+        .filter(x => x.conversation_id === convId || x.id === convId)
+        .slice()
+        .reverse();
+
+      for (const item of thread) {
+        const isFocal = item.id === focus.id;
+        const isNew = newlyArrivedIds.has(item.id);
+        container.appendChild(renderTweetNode(item, isFocal, isNew));
+      }
+      return;
+    }
+
+    if (state.tweets.length === 0) {
+      container.innerHTML = `<div class="empty-state">No posts yet. Seed a clip or compose a post above!</div>`;
+      return;
+    }
+
+    for (const t of state.tweets) {
+      const isNew = newlyArrivedIds.has(t.id);
+      container.appendChild(renderTweetNode(t, false, isNew));
+    }
+  }
+
+  async function pollTimeline(forceRender = false) {
+    try {
+      const resp = await fetch("/sim/timeline");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      state.users = data.users || state.users;
+      updateActorUI();
+
+      const incoming = data.tweets || [];
+      const newIds = new Set();
+      for (const t of incoming) {
+        if (state.firstLoadDone && !state.knownIds.has(t.id)) {
+          newIds.add(t.id);
+        }
+        state.knownIds.add(t.id);
+      }
+
+      const prevSig = JSON.stringify(state.tweets.map(x => [x.id, x.reply_count, x.quote_count]));
+      const nextSig = JSON.stringify(incoming.map(x => [x.id, x.reply_count, x.quote_count]));
+      state.tweets = incoming;
+      state.firstLoadDone = true;
+
+      if (forceRender || newIds.size > 0 || prevSig !== nextSig) {
+        renderFeed(newIds);
+      }
+    } catch (_) {
+      // Ignore transient network errors during poll
+    }
+  }
+
+  // Main composer wiring
+  const composerText = document.getElementById("composerText");
+  const charCount = document.getElementById("charCount");
+  const postBtn = document.getElementById("postBtn");
+  const videoInput = document.getElementById("videoInput");
+  const videoPreviewContainer = document.getElementById("videoPreviewContainer");
+  const videoPreview = document.getElementById("videoPreview");
+
+  function updateMainComposerState() {
+    const len = composerText.value.length;
+    const rem = 280 - len;
+    charCount.textContent = String(rem);
+    charCount.className = "char-count" + (rem < 0 ? " over" : "");
+    postBtn.disabled = (composerText.value.trim().length === 0 && !state.attachedFile) || rem < 0;
+  }
+
+  composerText.addEventListener("input", updateMainComposerState);
+
+  document.getElementById("attachVideoBtn").addEventListener("click", () => videoInput.click());
+  videoInput.addEventListener("change", () => {
+    const f = videoInput.files && videoInput.files[0];
+    if (!f) return;
+    state.attachedFile = f;
+    videoPreview.src = URL.createObjectURL(f);
+    videoPreviewContainer.style.display = "block";
+    updateMainComposerState();
+  });
+
+  document.getElementById("removeVideoBtn").addEventListener("click", () => {
+    state.attachedFile = null;
+    videoInput.value = "";
+    videoPreview.removeAttribute("src");
+    videoPreviewContainer.style.display = "none";
+    updateMainComposerState();
+  });
+
+  document.getElementById("askBotQuickBtn").addEventListener("click", () => {
+    const cur = composerText.value;
+    composerText.value = (cur ? cur + " " : "") + "@wholetake is this real?";
+    composerText.focus();
+    updateMainComposerState();
+  });
+
+  postBtn.addEventListener("click", async () => {
+    postBtn.disabled = true;
+    const fd = new FormData();
+    fd.append("username", state.activeUser);
+    fd.append("text", composerText.value.trim() || "📹");
+    if (state.attachedFile) {
+      fd.append("video", state.attachedFile, state.attachedFile.name || "clip.mp4");
+    }
+    const resp = await fetch("/sim/post", { method: "POST", body: fd });
+    if (resp.ok) {
+      composerText.value = "";
+      document.getElementById("removeVideoBtn").click();
+      updateMainComposerState();
+      await pollTimeline(true);
+    } else {
+      updateMainComposerState();
+    }
+  });
+
+  document.getElementById("actorSelect").addEventListener("change", (e) => {
+    state.activeUser = e.target.value;
+    localStorage.setItem("simx_user", state.activeUser);
+    updateActorUI();
+  });
+
+  document.getElementById("navBrand").addEventListener("click", () => navigate("/"));
+  document.getElementById("navHome").addEventListener("click", () => navigate("/"));
+  document.getElementById("backBtn").addEventListener("click", () => navigate("/"));
+
+  document.getElementById("navTheme").addEventListener("click", () => {
+    const isLight = document.documentElement.classList.toggle("light");
+    document.getElementById("themeLabel").textContent = isLight ? "Dark mode" : "Light mode";
+  });
+
+  syncRouteFromUrl();
+  pollTimeline(true);
+  setInterval(() => pollTimeline(false), 2000);
+})();
+</script>
+</body>
+</html>

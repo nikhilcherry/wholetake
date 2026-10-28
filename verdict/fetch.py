@@ -38,6 +38,16 @@ def is_url(url_or_path: str) -> bool:
     return url_or_path.startswith(("http://", "https://"))
 
 
+def _allowed_host_ports() -> set[str]:
+    raw = os.environ.get("WT_FETCH_ALLOW_HOSTS", "")
+    out: set[str] = set()
+    for item in raw.split(","):
+        tok = item.strip().lower()
+        if tok and ":" in tok:
+            out.add(tok)
+    return out
+
+
 def validate_public_url(url: str) -> None:
     """Reject non-http(s) URLs, credentials in URLs, and private/loopback/link-local hosts."""
     try:
@@ -53,6 +63,11 @@ def validate_public_url(url: str) -> None:
         raise SSRFError("URLs with embedded credentials are not allowed")
 
     host = parsed.hostname.strip().lower()
+    effective_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if f"{host}:{effective_port}" in _allowed_host_ports():
+        # Exact host:port match in WT_FETCH_ALLOW_HOSTS is exempted so simulated X on 127.0.0.1:8791 can serve clips.
+        return
+
     if host in ("localhost", "localhost.localdomain") or host.endswith((".local", ".internal", ".localhost")):
         raise SSRFError(f"forbidden local hostname: {host}")
 
@@ -75,7 +90,7 @@ def validate_public_url(url: str) -> None:
         pass
 
     try:
-        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), proto=socket.IPPROTO_TCP)
+        infos = socket.getaddrinfo(host, effective_port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         raise FetchError(f"DNS resolution failed for {host}: {e}") from e
 

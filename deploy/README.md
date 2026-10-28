@@ -1,6 +1,31 @@
 # Wholetake Systemd Deployment
 
-User-level `systemd` units for witnessing streams, transcribing chunks, maintaining the hash chain, anchoring chain heads on Base Sepolia (EAS) and Bitcoin (OpenTimestamps), and serving clip verdicts.
+User-level `systemd` units for witnessing streams, transcribing chunks, maintaining the hash chain, anchoring chain heads on Base Sepolia (EAS) and Bitcoin (OpenTimestamps), serving clip verdicts + evidence pages, and running the X reply bot.
+
+## Demo Stack Quickstart (`simx` + `verdict` + `bot`)
+
+For the local hackathon demo where the simulated X server runs on `127.0.0.1:8791` and the verdict service runs on `127.0.0.1:8790`:
+
+1. **Simulated X (`simx`)** on port `8791`:
+   ```bash
+   ./py -m simx serve --port 8791
+   ```
+2. **Verdict API & Evidence Page (`verdict`)** on port `8790` (allow-listing `127.0.0.1:8791` so `fetch` can pull demo videos from `simx` without weakening SSRF blocks for any other host/port):
+   ```bash
+   WT_FETCH_ALLOW_HOSTS="127.0.0.1:8791" ./py -m verdict serve --port 8790
+   ```
+   Evidence pages are served at `http://127.0.0.1:8790/v/<job_id>` (plus `/v/<job_id>/clip.wav` and `/v/<job_id>/verdict.json`).
+3. **X Reply Bot (`bot`)**:
+   ```bash
+   X_API_BASE="http://127.0.0.1:8791" \
+   X_BOT_TOKEN="sim-wholetake" \
+   WT_VERDICT_URL="http://127.0.0.1:8790" \
+   WT_PAGE_BASE="http://127.0.0.1:8790" \
+   BOT_POLL_S="5" \
+   BOT_INCLUDE_LINK="1" \
+   ./py -m bot run
+   ```
+   *(On real X, set `X_API_BASE=https://api.x.com`, `X_BOT_TOKEN=<real-token>`, and leave `BOT_INCLUDE_LINK=0` by default.)*
 
 ## Anchor Wallet Setup (One-Time)
 
@@ -20,7 +45,7 @@ User-level `systemd` units for witnessing streams, transcribing chunks, maintain
 mkdir -p ~/.config/systemd/user ~/Projects/wholetake/deploy/streams
 cp ~/Projects/wholetake/deploy/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now wholetake-transcribe.service wholetake-chain.service wholetake-anchor.service wholetake-verdict.service
+systemctl --user enable --now wholetake-transcribe.service wholetake-chain.service wholetake-anchor.service wholetake-verdict.service wholetake-bot.service
 loginctl enable-linger "$USER"
 ```
 
@@ -66,7 +91,7 @@ To verify every on-chain anchor for a stream against local `chain.jsonl` and liv
 
 ```bash
 systemctl --user status 'wholetake-*'
-journalctl --user -u wholetake-witness@creator -u wholetake-transcribe -u wholetake-chain -u wholetake-anchor -u wholetake-verdict -f
+journalctl --user -u wholetake-witness@creator -u wholetake-transcribe -u wholetake-chain -u wholetake-anchor -u wholetake-verdict -u wholetake-bot -f
 ```
 
 ## Quarantine a Corrupt Unchained Chunk
