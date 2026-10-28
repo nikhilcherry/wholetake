@@ -8,25 +8,64 @@ import pytest
 
 from ingest import optin, witness
 
+CH_A = "UC" + "a" * 22
+CH_B = "UC" + "b" * 22
+CH_X = "UC" + "x" * 22
+
 
 @pytest.fixture(autouse=True)
 def key(tmp_path, monkeypatch):
     monkeypatch.setattr(optin, "KEY_FILE", tmp_path / "claim.key")
+    optin.ensure_key()
 
 
 def test_claim_code_is_stable_per_channel_and_secret(tmp_path, monkeypatch):
-    a = optin.claim_code("UCaaa")
-    assert a == optin.claim_code("UCaaa") and a.startswith("wholetake-")
-    assert a != optin.claim_code("UCbbb")
+    a = optin.claim_code(CH_A)
+    assert a == optin.claim_code(CH_A) and a.startswith("wholetake-")
+    assert a != optin.claim_code(CH_B)
     assert (tmp_path / "claim.key").stat().st_mode & 0o777 == 0o600
     monkeypatch.setattr(optin, "KEY_FILE", tmp_path / "other.key")
-    assert optin.claim_code("UCaaa") != a  # someone without our secret can't mint codes
+    # Without creating the key, claim_code/check must raise MissingKeyError
+    with pytest.raises(optin.MissingKeyError):
+        optin.claim_code(CH_A)
+    optin.ensure_key()
+    assert optin.claim_code(CH_A) != a  # someone without our secret can't mint codes
+
+
+def test_missing_key_is_fatal_in_witness(stream, tmp_path, monkeypatch):
+    monkeypatch.setattr(optin, "KEY_FILE", tmp_path / "nonexistent.key")
+    w = witness.Witness(str(stream), "s_nokey", 2, tmp_path / "w")
+    w.optin = True
+    try:
+        rc = w.run(until=time.time() + 5)
+        assert rc == 1
+        assert not list(w.dir.glob("*.wav"))
+        assert not (w.dir / "optin.jsonl").exists()
+    finally:
+        w.close()
+
+
+def test_resolve_requires_valid_uc_channel_id(monkeypatch):
+    # Missing channel_id even when d["id"] is present -> raises ValueError (no fallback to d["id"])
+    monkeypatch.setattr(optin, "ytdlp_json", lambda url, *extra: {"id": "video123", "title": "Some Video"})
+    with pytest.raises(ValueError, match="channel_id"):
+        optin.resolve("https://youtube.com/watch?v=video123")
+
+    # Wrong length / prefix -> raises ValueError
+    monkeypatch.setattr(optin, "ytdlp_json", lambda url, *extra: {"channel_id": "UCshort", "id": "UCshort"})
+    with pytest.raises(ValueError, match="channel_id"):
+        optin.resolve("https://youtube.com/@x")
+
+    # Valid 24-char UC channel_id succeeds
+    monkeypatch.setattr(optin, "ytdlp_json", lambda url, *extra: {"channel_id": CH_X, "id": CH_X, "description": "bio text", "channel": "X"})
+    info = optin.resolve("https://youtube.com/@x")
+    assert info["channel_id"] == CH_X and info["bio"] == "bio text"
 
 
 def test_check_finds_code_in_bio_or_stream_description(monkeypatch):
-    code = optin.claim_code("UCx")
+    code = optin.claim_code(CH_X)
     for bio, desc, where in [(f"hi {code}", "", "bio"), ("hi", f"live! {code}", "stream_description"), ("hi", "", None)]:
-        monkeypatch.setattr(optin, "resolve", lambda url, b=bio, d=desc: {"channel_id": "UCx", "channel": "X", "bio": b, "stream_description": d})
+        monkeypatch.setattr(optin, "resolve", lambda url, b=bio, d=desc: {"channel_id": CH_X, "channel": "X", "bio": b, "stream_description": d})
         r = optin.check("https://youtube.com/@x/live")
         assert r["where"] == where and r["ok"] == (where is not None)
 
@@ -55,25 +94,37 @@ def make(stream, tmp_path, answers, monkeypatch):
 
 def test_never_connects_without_the_code(stream, tmp_path, monkeypatch):
     w, calls = make(stream, tmp_path, [False], monkeypatch)
-    w.run(until=time.time() + 10)
-    assert not list(w.dir.glob("*.wav"))
-    assert [json.loads(l)["ok"] for l in (w.dir / "optin.jsonl").read_text().splitlines()] == [False]
+    try:
+        rc = w.run(until=time.time() + 10)
+        assert rc == 3
+        assert not list(w.dir.glob("*.wav"))
+        assert [json.loads(l)["ok"] for l in (w.dir / "optin.jsonl").read_text().splitlines()] == [False]
+    finally:
+        w.close()
 
 
 def test_unreachable_check_does_not_start_a_fresh_witness(stream, tmp_path, monkeypatch):
     w, calls = make(stream, tmp_path, [None], monkeypatch)
     monkeypatch.setattr(witness, "BACKOFF", [1])
-    w.run(until=time.time() + 4)
-    assert not list(w.dir.glob("*.wav")) and len(calls) >= 2  # kept retrying the check, never captured
+    try:
+        rc = w.run(until=time.time() + 4)
+        assert rc == 0
+        assert not list(w.dir.glob("*.wav")) and len(calls) >= 2  # kept retrying the check, never captured
+    finally:
+        w.close()
 
 
 def test_stops_when_creator_removes_the_code(stream, tmp_path, monkeypatch):
     monkeypatch.setattr(witness, "OPTIN_EVERY_S", 5)
     w, calls = make(stream, tmp_path, [True, False], monkeypatch)
-    t0 = time.time()
-    w.run(until=time.time() + 40)
-    took = time.time() - t0
-    assert took < 15, f"kept witnessing {took:.0f}s after the code was removed"
-    assert list(w.dir.glob("*.meta.json")), "should have captured while opted in"
-    log = [json.loads(l)["ok"] for l in (w.dir / "optin.jsonl").read_text().splitlines()]
-    assert log == [True, False]
+    try:
+        t0 = time.time()
+        rc = w.run(until=time.time() + 40)
+        took = time.time() - t0
+        assert rc == 3
+        assert took < 15, f"kept witnessing {took:.0f}s after the code was removed"
+        assert list(w.dir.glob("*.meta.json")), "should have captured while opted in"
+        log = [json.loads(l)["ok"] for l in (w.dir / "optin.jsonl").read_text().splitlines()]
+        assert log == [True, False]
+    finally:
+        w.close()

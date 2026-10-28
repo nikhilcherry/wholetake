@@ -1,0 +1,16 @@
+[Unit]
+Description=Wholetake Livestream Witness (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/wholetake
+EnvironmentFile=%h/Projects/wholetake/deploy/streams/%i.env
+ExecStart=%h/Projects/wholetake/py -m ingest.witness ${WT_URL} --name %i
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=3
+
+[Install]
+WantedBy=default.target

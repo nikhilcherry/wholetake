@@ -15,6 +15,7 @@ from ingest.chain import (
     entry_hash,
     load,
     proof,
+    quarantine,
     verify,
 )
 
@@ -121,8 +122,10 @@ def test_ordering_and_waiting(tmp_path: Path):
         assert entries[5]["seq"] == 0 and entries[5]["chunk_n"] == 1
         assert entries[6]["seq"] == 2 and entries[6]["chunk_n"] == 3
 
-        ok, problems = verify(sdir)
+        ok, problems, warnings = verify(sdir)
         assert ok, problems
+        # seq 3 has no transcript yet -> warning, not problem
+        assert any("seq=3" in w for w in warnings)
 
         head = json.loads((sdir / "head.json").read_text())
         assert head["stream"] == "aljazeera"
@@ -144,8 +147,9 @@ def _build_valid_stream(tmp_path: Path) -> Path:
     app = StreamAppender(sdir)
     app.step()
     app.close()
-    ok, problems = verify(sdir)
+    ok, problems, warnings = verify(sdir)
     assert ok, problems
+    assert not warnings
     return sdir
 
 
@@ -156,7 +160,7 @@ def test_tamper_edit_wav_byte(tmp_path: Path):
     data[-1] ^= 0xFF
     wav0.write_bytes(bytes(data))
 
-    ok, problems = verify(sdir)
+    ok, problems, _ = verify(sdir)
     assert not ok
     assert any("n=1" in p and "seq=0" in p and "wav_sha256" in p for p in problems), problems
 
@@ -168,7 +172,7 @@ def test_tamper_edit_meta_received_utc(tmp_path: Path):
     m["received_utc"] = "2099-01-01T00:00:00.000Z"
     meta2.write_text(json.dumps(m, indent=1))
 
-    ok, problems = verify(sdir)
+    ok, problems, _ = verify(sdir)
     assert not ok
     assert any("n=3" in p and "seq=2" in p and "meta_sha256" in p for p in problems), problems
 
@@ -181,7 +185,7 @@ def test_tamper_delete_middle_line(tmp_path: Path):
     del lines[2]
     chain_p.write_bytes(b"".join(lines))
 
-    ok, problems = verify(sdir)
+    ok, problems, _ = verify(sdir)
     assert not ok
     assert any("n=2" in p and "seq=2" in p for p in problems), problems
 
@@ -194,7 +198,7 @@ def test_tamper_swap_two_lines(tmp_path: Path):
     lines[4], lines[5] = lines[5], lines[4]
     chain_p.write_bytes(b"".join(lines))
 
-    ok, problems = verify(sdir)
+    ok, problems, _ = verify(sdir)
     assert not ok
     assert any("n=4" in p and "seq=2" in p for p in problems), problems
 
@@ -209,7 +213,7 @@ def test_tamper_recompute_single_line_hash(tmp_path: Path):
         b"".join((canonical_json(e) + "\n").encode() for e in entries)
     )
 
-    ok, problems = verify(sdir)
+    ok, problems, _ = verify(sdir)
     assert not ok
     # n=3's prev link no longer matches n=2's new hash
     assert any("n=3" in p and "seq=2" in p and "prev link mismatch" in p for p in problems), problems
@@ -219,7 +223,7 @@ def test_tamper_delete_transcript_json(tmp_path: Path):
     sdir = _build_valid_stream(tmp_path)
     (sdir / "000002.json").unlink()
 
-    ok, problems = verify(sdir)
+    ok, problems, _ = verify(sdir)
     assert not ok
     assert any("n=5" in p and "seq=2" in p and "000002.json" in p for p in problems), problems
 
@@ -253,7 +257,7 @@ def test_transcript_wav_sha_binding(tmp_path: Path):
     entries[5]["hash"] = entry_hash(entries[5])
     (valid_dir / "chain.jsonl").write_bytes(b"".join((canonical_json(e) + "\n").encode() for e in entries))
 
-    ok, problems = verify(valid_dir)
+    ok, problems, _ = verify(valid_dir)
     assert not ok
     assert any("n=5" in p and "seq=2" in p and "transcript wav_sha256" in p for p in problems), problems
 
@@ -286,8 +290,9 @@ def test_restart_repairs_truncated_line_and_is_idempotent(tmp_path: Path):
     assert after[3]["n"] == 3
     assert after[3]["seq"] == 2
     assert after[3]["prev"] == before[-1]["hash"]
-    ok, problems = verify(sdir)
+    ok, problems, warnings = verify(sdir)
     assert ok, problems
+    assert len(warnings) == 3  # 3 chunks without transcripts
 
     # Restarting twice with no changes appends nothing
     for _ in range(2):
@@ -319,9 +324,10 @@ def test_proof_and_check_proof_with_anchored_head_n(tmp_path: Path):
     anchored_n = anchored_head["n"]
     anchored_hash = anchored_head["hash"]
 
-    # Append more entries after the anchored head
+    # Append more entries after the anchored head (chunk 3 + transcript 3, and chunk 4 without transcript)
     write_chunk(sdir, 3, b"\x30\x00" * 800)
     write_transcript(sdir, 3, "three")
+    write_chunk(sdir, 4, b"\x40\x00" * 800)
     app = StreamAppender(sdir)
     app.step()
     app.close()
@@ -346,6 +352,26 @@ def test_proof_and_check_proof_with_anchored_head_n(tmp_path: Path):
     assert check_proof(prf_latest, new_head_hash)
     assert not check_proof(prf_latest, anchored_hash)
 
+    # head_n before transcript for seq=0 is chained (transcript for seq=0 is at n=4) raises ValueError
+    with pytest.raises(ValueError, match="transcript for seq 0 not chained under head n=2"):
+        proof(sdir, 0, head_n=2)
+
+    # Chunk 4 has no transcript chained yet -> proof(sdir, 4) raises ValueError
+    with pytest.raises(ValueError, match="transcript for seq 4 not chained"):
+        proof(sdir, 4)
+
+    # check_proof rejects a proof slice that lacks the transcript entry for seq
+    no_tx_entries = prf_anchored["entries"][:2]  # only chunk 0 (n=1) and gap 1 (n=2)
+    no_tx_prf = {
+        "stream": sdir.name,
+        "seq": 0,
+        "chunk_n": 1,
+        "head_n": no_tx_entries[-1]["n"],
+        "head_hash": no_tx_entries[-1]["hash"],
+        "entries": no_tx_entries,
+    }
+    assert not check_proof(no_tx_prf, no_tx_entries[-1]["hash"])
+
     # Invalid head_n (before chunk's n=1 or beyond log length) raises ValueError
     with pytest.raises(ValueError):
         proof(sdir, 0, head_n=0)
@@ -360,6 +386,112 @@ def test_proof_and_check_proof_with_anchored_head_n(tmp_path: Path):
     # Even if the attacker recomputes that single entry's hash, the link breaks
     tampered["entries"][1]["hash"] = entry_hash(tampered["entries"][1])
     assert not check_proof(tampered, anchored_hash)
+
+
+def test_optin_chaining_and_verification(tmp_path: Path):
+    sdir = tmp_path / "optin_stream"
+    sdir.mkdir(parents=True)
+    optin_p = sdir / "optin.jsonl"
+    rec0 = {"checked_utc": "2026-01-01T00:00:00.000Z", "code": "wholetake-aaaaaaaa", "ok": True, "url": "https://youtube.com/@x/live"}
+    rec1 = {"checked_utc": "2026-01-01T01:00:00.000Z", "code": "wholetake-aaaaaaaa", "ok": True, "url": "https://youtube.com/@x/live"}
+    optin_p.write_text(json.dumps(rec0, sort_keys=True) + "\n")
+
+    write_chunk(sdir, 0, b"\x01\x00" * 800)
+
+    app = StreamAppender(sdir)
+    try:
+        app.step()
+        entries = load(sdir)
+        assert [e["kind"] for e in entries] == ["genesis", "optin", "chunk"]
+        assert entries[1]["line"] == 0 and entries[1]["ok"] is True
+
+        # Append second optin line incrementally
+        with open(optin_p, "a") as f:
+            f.write(json.dumps(rec1, sort_keys=True) + "\n")
+        app.step()
+        entries = load(sdir)
+        assert [e["kind"] for e in entries] == ["genesis", "optin", "chunk", "optin"]
+        assert entries[3]["line"] == 1
+    finally:
+        app.close()
+
+    ok, problems, _ = verify(sdir)
+    assert ok, problems
+
+    # Editing a line in optin.jsonl is caught by verify
+    tampered_rec0 = dict(rec0, ok=False)
+    optin_p.write_text(json.dumps(tampered_rec0, sort_keys=True) + "\n" + json.dumps(rec1, sort_keys=True) + "\n")
+    ok, problems, _ = verify(sdir)
+    assert not ok
+    assert any("optin line 0" in p for p in problems), problems
+
+
+def test_verify_both_meta_and_gap_is_problem(tmp_path: Path):
+    sdir = _build_valid_stream(tmp_path)
+    # Create a conflicting 000000.gap.json alongside chained chunk 000000.meta.json
+    write_gap(sdir, 0)
+    ok, problems, _ = verify(sdir)
+    assert not ok
+    assert any("both 000000.meta.json and 000000.gap.json exist" in p for p in problems), problems
+
+
+def test_quarantine_corrupt_chunk_and_resume(tmp_path: Path, capsys):
+    sdir = tmp_path / "q_stream"
+    write_chunk(sdir, 0, b"\x01\x00" * 800)
+    # seq 1 has corrupt wav sha256
+    write_chunk(sdir, 1, b"\x02\x00" * 800, wav_sha_override="0" * 64)
+    write_chunk(sdir, 2, b"\x03\x00" * 800)
+
+    daemon = ChainDaemon(tmp_path)
+    try:
+        daemon.step()
+        err = capsys.readouterr().err
+        assert f"python -m ingest.chain --quarantine {sdir} 1" in err
+        assert daemon.appenders[sdir].halted is True
+    finally:
+        daemon.close()
+
+    # Refuse quarantine on already-chained seq 0 or future seq 2
+    with pytest.raises(ValueError, match="not the next unchained seq"):
+        quarantine(sdir, 0)
+    with pytest.raises(ValueError, match="not the next unchained seq"):
+        quarantine(sdir, 2)
+
+    # Quarantine seq 1 via CLI
+    res = subprocess.run(
+        [sys.executable, "-m", "ingest.chain", "--quarantine", str(sdir), "1"],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert (sdir / "quarantine" / "000001.wav").exists()
+    assert (sdir / "quarantine" / "000001.meta.json").exists()
+    assert not (sdir / "000001.wav").exists()
+    assert not (sdir / "000001.meta.json").exists()
+
+    gap1 = json.loads((sdir / "000001.gap.json").read_text())
+    assert gap1["seq"] == 1
+    assert gap1["kind"] == "gap"
+    assert gap1["reason"] == "corrupt on disk before chaining (quarantined)"
+    assert gap1["from_utc"] == "2026-01-01T00:01:00.000Z"
+    assert gap1["to_utc"] == "2026-01-01T00:01:01.000Z"
+
+    # Now appender can continue chaining seq 1 (as gap) and seq 2 (as chunk)
+    app = StreamAppender(sdir)
+    try:
+        app.step()
+        entries = load(sdir)
+        assert [(e["kind"], e.get("seq")) for e in entries] == [
+            ("genesis", None),
+            ("chunk", 0),
+            ("gap", 1),
+            ("chunk", 2),
+        ]
+    finally:
+        app.close()
+
+    ok, problems, _ = verify(sdir)
+    assert ok, problems
 
 
 def test_sha_mismatch_halts_only_bad_stream(tmp_path: Path):
@@ -387,7 +519,7 @@ def test_sha_mismatch_halts_only_bad_stream(tmp_path: Path):
         good_entries = load(good_dir)
         assert [e["kind"] for e in good_entries] == ["genesis", "chunk", "chunk"]
         assert good_entries[-1]["seq"] == 1
-        ok, problems = verify(good_dir)
+        ok, problems, _ = verify(good_dir)
         assert ok, problems
 
         # Adding seq 2 to good_stream continues to work on subsequent steps
@@ -424,7 +556,7 @@ def test_corrupt_middle_line_in_one_stream_does_not_crash_daemon(tmp_path: Path,
         assert corrupt_dir in daemon.failed_dirs
 
         # Healthy stream was chained properly
-        ok, problems = verify(healthy_dir)
+        ok, problems, _ = verify(healthy_dir)
         assert ok, problems
         assert len(load(healthy_dir)) == 3
 
@@ -438,10 +570,17 @@ def test_corrupt_middle_line_in_one_stream_does_not_crash_daemon(tmp_path: Path,
         daemon.close()
 
 
-def test_cli_verify_exit_codes(tmp_path: Path):
+def test_cli_verify_exit_codes_and_warnings(tmp_path: Path):
     sdir = _build_valid_stream(tmp_path)
+    # Remove transcript 2 from chain by adding chunk 3 without transcript -> should print WARN and still exit 0
+    write_chunk(sdir, 3, b"\x30\x00" * 800)
+    app = StreamAppender(sdir)
+    app.step()
+    app.close()
+
     res_ok = subprocess.run([sys.executable, "-m", "ingest.chain", "--verify", str(sdir)], capture_output=True, text=True)
     assert res_ok.returncode == 0
+    assert "WARN:" in res_ok.stdout
     assert "OK" in res_ok.stdout
 
     (sdir / "000000.wav").unlink()

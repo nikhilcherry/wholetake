@@ -1,17 +1,20 @@
-"""Append-only, per-stream hash chain of witnessed chunks, gaps, and transcripts.
+"""Append-only, per-stream hash chain of witnessed chunks, gaps, transcripts, and opt-in checks.
 
     python -m ingest.chain [--root data/witness]
     python -m ingest.chain --verify data/witness/<name>
+    python -m ingest.chain --quarantine data/witness/<name> <seq>
 
 Watches every stream directory under --root and maintains <dir>/chain.jsonl and <dir>/head.json.
 Chunks and gaps are chained in strict contiguous seq order (0, 1, 2, ...). Transcripts may arrive
 minutes later and out of order, and are chained once their corresponding chunk is already in the log.
+Opt-in checks in <dir>/optin.jsonl are chained incrementally as kind "optin".
 """
 import argparse
 import fcntl
 import hashlib
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -35,7 +38,10 @@ def sha256_file(path: Path) -> str:
 
 def write_atomic(path: Path, data: bytes):
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(data)
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
@@ -99,6 +105,37 @@ def _repair_and_load(chain_path: Path) -> list[dict]:
     return entries
 
 
+def _validate_chunk_files(stream_dir: Path, seq: int) -> tuple[bool, str, bytes | None, dict | None, str | None]:
+    """Return (ok, error_reason, meta_bytes, meta_dict, wav_sha256)."""
+    meta_p = stream_dir / f"{seq:06d}.meta.json"
+    wav_p = stream_dir / f"{seq:06d}.wav"
+    if not meta_p.exists():
+        return False, f"missing meta {meta_p.name}", None, None, None
+    try:
+        meta_bytes = meta_p.read_bytes()
+        meta = json.loads(meta_bytes.decode("utf-8"))
+        if not isinstance(meta, dict):
+            return False, f"meta {meta_p.name} is not a JSON object", meta_bytes, None, None
+        _ = meta["received_utc"]
+        _ = meta["duration_s"]
+        expected_sha = meta["sha256"]
+    except Exception as e:
+        return False, f"reading {meta_p.name}: {e}", None, None, None
+
+    if not wav_p.exists():
+        return False, f"missing wav for {meta_p.name}", meta_bytes, meta, None
+    try:
+        wav_bytes = wav_p.read_bytes()
+    except Exception as e:
+        return False, f"reading {wav_p.name}: {e}", meta_bytes, meta, None
+
+    wav_sha = sha256_bytes(wav_bytes)
+    if wav_sha != expected_sha:
+        return False, f"seq {seq:06d} wav sha256 mismatch: file={wav_sha} != meta={expected_sha}", meta_bytes, meta, wav_sha
+
+    return True, "", meta_bytes, meta, wav_sha
+
+
 class StreamAppender:
     """Single-process owner of a stream's chain.jsonl and head.json."""
 
@@ -120,8 +157,9 @@ class StreamAppender:
 
         try:
             self.entries: list[dict] = []
-            self.counts = {"chunk": 0, "gap": 0, "transcript": 0}
+            self.counts = {"chunk": 0, "gap": 0, "transcript": 0, "optin": 0}
             self.last_seq = -1
+            self.next_optin_line = 0
             self.chunk_n_by_seq: dict[int, int] = {}
             self.chunk_wav_sha_by_seq: dict[int, str] = {}
             self.transcribed_seqs: set[int] = set()
@@ -159,6 +197,8 @@ class StreamAppender:
                 self.chunk_wav_sha_by_seq[seq] = e["wav_sha256"]
         elif kind == "transcript":
             self.transcribed_seqs.add(e["seq"])
+        elif kind == "optin":
+            self.next_optin_line = max(self.next_optin_line, e["line"] + 1)
 
     def _append_entry(self, body: dict) -> dict:
         n = len(self.entries)
@@ -180,11 +220,12 @@ class StreamAppender:
         if not self.entries:
             return
         last = self.entries[-1]
+        kinds = {k: v for k, v in self.counts.items() if k in ("chunk", "gap", "transcript") or v > 0}
         head = {
             "stream": self.stream,
             "n": last["n"],
             "hash": last["hash"],
-            "kinds": dict(self.counts),
+            "kinds": kinds,
             "last_seq": self.last_seq,
             "updated_utc": utc_now(),
         }
@@ -200,12 +241,25 @@ class StreamAppender:
                 source = json.loads(meta0.read_text()).get("source")
             except Exception:
                 source = None
+        if source is None:
+            optin_p = self.dir / "optin.jsonl"
+            if optin_p.exists():
+                try:
+                    first_line = optin_p.read_bytes().splitlines()[0]
+                    source = json.loads(first_line.decode("utf-8")).get("url")
+                except Exception:
+                    source = None
         self._append_entry({
             "kind": "genesis",
             "stream": self.stream,
             "source": source,
             "created_utc": utc_now(),
         })
+
+    def _halt_chunk(self, seq: int, reason: str):
+        print(f"ERROR [{self.stream}] {reason}; halting stream", file=sys.stderr, flush=True)
+        print(f"To quarantine: python -m ingest.chain --quarantine {self.dir} {seq}", file=sys.stderr, flush=True)
+        self.halted = True
 
     def step(self) -> int:
         """Scan stream directory and append any ready items. Returns number of entries appended."""
@@ -214,36 +268,48 @@ class StreamAppender:
 
         before = len(self.entries)
 
+        # 0. Append any new opt-in check lines from optin.jsonl
+        optin_p = self.dir / "optin.jsonl"
+        if optin_p.exists():
+            raw_lines = optin_p.read_bytes().splitlines(keepends=True)
+            while self.next_optin_line < len(raw_lines):
+                raw_line = raw_lines[self.next_optin_line]
+                if not raw_line.endswith(b"\n"):
+                    break
+                line_bytes = raw_line.rstrip(b"\r\n")
+                try:
+                    obj = json.loads(line_bytes.decode("utf-8"))
+                except Exception as e:
+                    print(f"ERROR [{self.stream}] reading optin.jsonl line {self.next_optin_line}: {e}; halting stream", file=sys.stderr, flush=True)
+                    self.halted = True
+                    break
+                self._ensure_genesis()
+                self._append_entry({
+                    "kind": "optin",
+                    "line": self.next_optin_line,
+                    "line_sha256": sha256_bytes(line_bytes),
+                    "ok": obj.get("ok"),
+                    "checked_utc": obj.get("checked_utc"),
+                })
+
+        if self.halted:
+            return len(self.entries) - before
+
         # 1. Advance contiguous chunk / gap sequence
         while not self.halted:
             next_seq = self.last_seq + 1
             meta_p = self.dir / f"{next_seq:06d}.meta.json"
             gap_p = self.dir / f"{next_seq:06d}.gap.json"
 
-            if meta_p.exists():
-                wav_p = self.dir / f"{next_seq:06d}.wav"
-                if not wav_p.exists():
-                    print(f"ERROR [{self.stream}] missing wav for {meta_p.name}; halting stream", file=sys.stderr, flush=True)
-                    self.halted = True
-                    break
-                try:
-                    meta_bytes = meta_p.read_bytes()
-                    meta = json.loads(meta_bytes.decode("utf-8"))
-                    wav_bytes = wav_p.read_bytes()
-                except Exception as e:
-                    print(f"ERROR [{self.stream}] reading seq {next_seq:06d}: {e}; halting stream", file=sys.stderr, flush=True)
-                    self.halted = True
-                    break
+            if meta_p.exists() and gap_p.exists():
+                print(f"ERROR [{self.stream}] both {meta_p.name} and {gap_p.name} exist; halting stream", file=sys.stderr, flush=True)
+                self.halted = True
+                break
 
-                wav_sha = sha256_bytes(wav_bytes)
-                if wav_sha != meta.get("sha256"):
-                    print(
-                        f"ERROR [{self.stream}] seq {next_seq:06d} wav sha256 mismatch: "
-                        f"file={wav_sha} != meta={meta.get('sha256')}; halting stream",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    self.halted = True
+            if meta_p.exists():
+                ok, reason, meta_bytes, meta, wav_sha = _validate_chunk_files(self.dir, next_seq)
+                if not ok:
+                    self._halt_chunk(next_seq, reason)
                     break
 
                 self._ensure_genesis()
@@ -333,18 +399,72 @@ class StreamAppender:
         return len(self.entries) - before
 
 
-def verify(stream_dir: Path | str, check_files: bool = True) -> tuple[bool, list[str]]:
-    """Verify the entire chain and (optionally) all referenced files on disk."""
+def quarantine(stream_dir: Path | str, seq: int) -> Path:
+    """Quarantine corrupt unchained chunk `seq` into <stream_dir>/quarantine/ and replace with a gap."""
+    d = Path(stream_dir)
+    if not d.exists():
+        raise ValueError(f"stream directory {d} does not exist")
+
+    entries = _repair_and_load(d / "chain.jsonl")
+    last_seq = -1
+    for e in entries:
+        if e.get("kind") in ("chunk", "gap") and isinstance(e.get("seq"), int):
+            last_seq = e["seq"]
+
+    next_seq = last_seq + 1
+    if seq != next_seq:
+        raise ValueError(f"quarantine refused: seq {seq} is not the next unchained seq (expected {next_seq})")
+
+    meta_p = d / f"{seq:06d}.meta.json"
+    wav_p = d / f"{seq:06d}.wav"
+    gap_p = d / f"{seq:06d}.gap.json"
+
+    if gap_p.exists():
+        raise ValueError(f"quarantine refused: {gap_p.name} already exists")
+    if not meta_p.exists() and not wav_p.exists():
+        raise ValueError(f"quarantine refused: neither {meta_p.name} nor {wav_p.name} exists")
+
+    ok, _reason, _meta_bytes, meta, _wav_sha = _validate_chunk_files(d, seq)
+    if ok:
+        raise ValueError(f"quarantine refused: chunk {seq:06d} passes validation")
+
+    from_utc = meta.get("start_utc_est") if isinstance(meta, dict) else None
+    to_utc = meta.get("end_utc_est") if isinstance(meta, dict) else None
+    duration_s = meta.get("duration_s") if isinstance(meta, dict) else None
+
+    qdir = d / "quarantine"
+    qdir.mkdir(parents=True, exist_ok=True)
+    if wav_p.exists():
+        shutil.move(str(wav_p), str(qdir / wav_p.name))
+    if meta_p.exists():
+        shutil.move(str(meta_p), str(qdir / meta_p.name))
+
+    gap = {
+        "seq": seq,
+        "kind": "gap",
+        "stream": d.name,
+        "reason": "corrupt on disk before chaining (quarantined)",
+        "from_utc": from_utc,
+        "to_utc": to_utc,
+        "duration_s": duration_s,
+    }
+    write_atomic(gap_p, (json.dumps(gap, indent=1) + "\n").encode("utf-8"))
+    return gap_p
+
+
+def verify(stream_dir: Path | str, check_files: bool = True) -> tuple[bool, list[str], list[str]]:
+    """Verify the entire chain and (optionally) all referenced files on disk. Returns (ok, problems, warnings)."""
     d = Path(stream_dir)
     chain_p = d / "chain.jsonl"
     problems: list[str] = []
+    warnings: list[str] = []
 
     if not chain_p.exists():
-        return False, ["chain.jsonl does not exist"]
+        return False, ["chain.jsonl does not exist"], warnings
 
     raw_lines = chain_p.read_bytes().splitlines(keepends=True)
     if not raw_lines:
-        return False, ["chain.jsonl is empty"]
+        return False, ["chain.jsonl is empty"], warnings
 
     entries: list[dict] = []
     for idx, raw_line in enumerate(raw_lines):
@@ -354,13 +474,19 @@ def verify(stream_dir: Path | str, check_files: bool = True) -> tuple[bool, list
             e = json.loads(raw_line.decode("utf-8"))
         except Exception as exc:
             problems.append(f"n={idx}: invalid JSON ({exc})")
-            return False, problems
+            return False, problems, warnings
         entries.append(e)
 
     expected_seq = 0
+    expected_optin_line = 0
     chunks_by_seq: dict[int, int] = {}
     chunk_wav_sha_by_seq: dict[int, str] = {}
     transcripts_by_seq: set[int] = set()
+
+    optin_p = d / "optin.jsonl"
+    optin_lines: list[bytes] | None = None
+    if check_files and optin_p.exists():
+        optin_lines = [ln.rstrip(b"\r\n") for ln in optin_p.read_bytes().splitlines()]
 
     for idx, e in enumerate(entries):
         n = e.get("n")
@@ -397,6 +523,9 @@ def verify(stream_dir: Path | str, check_files: bool = True) -> tuple[bool, list
             if check_files and isinstance(seq, int):
                 wav_p = d / f"{seq:06d}.wav"
                 meta_p = d / f"{seq:06d}.meta.json"
+                gap_p = d / f"{seq:06d}.gap.json"
+                if gap_p.exists():
+                    problems.append(f"{tag}: both {meta_p.name} and {gap_p.name} exist for chained seq={seq}")
                 if not wav_p.exists():
                     problems.append(f"{tag}: missing file {wav_p.name}")
                 else:
@@ -426,6 +555,9 @@ def verify(stream_dir: Path | str, check_files: bool = True) -> tuple[bool, list
                 expected_seq = seq + 1
             if check_files and isinstance(seq, int):
                 gap_p = d / f"{seq:06d}.gap.json"
+                meta_p = d / f"{seq:06d}.meta.json"
+                if meta_p.exists():
+                    problems.append(f"{tag}: both {meta_p.name} and {gap_p.name} exist for chained seq={seq}")
                 if not gap_p.exists():
                     problems.append(f"{tag}: missing file {gap_p.name}")
                 else:
@@ -467,10 +599,38 @@ def verify(stream_dir: Path | str, check_files: bool = True) -> tuple[bool, list
                     actual_mel = sha256_file(mel_p)
                     if actual_mel != e.get("mel_sha256"):
                         problems.append(f"{tag}: mel_sha256 mismatch on {mel_p.name}")
+
+        elif kind == "optin":
+            line_idx = e.get("line")
+            if line_idx != expected_optin_line:
+                problems.append(f"{tag}: out-of-order optin line (expected line={expected_optin_line}, got line={line_idx})")
+            if isinstance(line_idx, int):
+                expected_optin_line = line_idx + 1
+            if check_files:
+                if optin_lines is None:
+                    problems.append(f"{tag}: missing file optin.jsonl")
+                elif not isinstance(line_idx, int) or line_idx < 0 or line_idx >= len(optin_lines):
+                    problems.append(f"{tag}: optin line {line_idx} missing from optin.jsonl")
+                else:
+                    raw_optin_line = optin_lines[line_idx]
+                    actual_sha = sha256_bytes(raw_optin_line)
+                    if actual_sha != e.get("line_sha256"):
+                        problems.append(f"{tag}: optin line {line_idx} sha256 mismatch")
+                    try:
+                        optin_obj = json.loads(raw_optin_line.decode("utf-8"))
+                        if optin_obj.get("ok") != e.get("ok") or optin_obj.get("checked_utc") != e.get("checked_utc"):
+                            problems.append(f"{tag}: optin line {line_idx} field mismatch")
+                    except Exception as exc:
+                        problems.append(f"{tag}: invalid JSON in optin.jsonl line {line_idx} ({exc})")
+
         else:
             problems.append(f"{tag}: unknown kind {kind!r}")
 
-    return len(problems) == 0, problems
+    for c_seq, c_n in sorted(chunks_by_seq.items()):
+        if c_seq not in transcripts_by_seq:
+            warnings.append(f"seq={c_seq} (n={c_n}): chunk has no chained transcript")
+
+    return len(problems) == 0, problems, warnings
 
 
 def proof(stream_dir: Path | str, seq: int, head_n: int | None = None) -> dict:
@@ -493,10 +653,18 @@ def proof(stream_dir: Path | str, seq: int, head_n: int | None = None) -> dict:
         raise ValueError(f"invalid head_n={head_n} for chunk at n={start_idx} (log length={len(entries)})")
 
     sliced = entries[start_idx : end_idx + 1]
+    chunk_n = entries[start_idx]["n"]
+    has_tx = any(
+        e.get("kind") == "transcript" and e.get("seq") == seq and e.get("chunk_n") == chunk_n
+        for e in sliced
+    )
+    if not has_tx:
+        raise ValueError(f"transcript for seq {seq} not chained under head n={end_idx}")
+
     return {
         "stream": d.name,
         "seq": seq,
-        "chunk_n": entries[start_idx]["n"],
+        "chunk_n": chunk_n,
         "head_n": sliced[-1]["n"],
         "head_hash": sliced[-1]["hash"],
         "entries": sliced,
@@ -504,7 +672,7 @@ def proof(stream_dir: Path | str, seq: int, head_n: int | None = None) -> dict:
 
 
 def check_proof(prf: dict, head_hash: str) -> bool:
-    """Verify that a proof starts with the claimed chunk entry and links intact to `head_hash`."""
+    """Verify that a proof starts with the claimed chunk entry, includes its transcript, and links intact to `head_hash`."""
     try:
         entries = prf["entries"]
         seq = prf["seq"]
@@ -513,10 +681,12 @@ def check_proof(prf: dict, head_hash: str) -> bool:
         first = entries[0]
         if first.get("kind") != "chunk" or first.get("seq") != seq:
             return False
-        if prf.get("chunk_n") is not None and first.get("n") != prf["chunk_n"]:
+        chunk_n = first.get("n")
+        if prf.get("chunk_n") is not None and chunk_n != prf["chunk_n"]:
             return False
         if prf.get("head_n") is not None and entries[-1].get("n") != prf["head_n"]:
             return False
+        has_tx = False
         for i, e in enumerate(entries):
             if not isinstance(e, dict):
                 return False
@@ -527,6 +697,10 @@ def check_proof(prf: dict, head_hash: str) -> bool:
                     return False
                 if e.get("prev") != entries[i - 1].get("hash"):
                     return False
+            if e.get("kind") == "transcript" and e.get("seq") == seq and e.get("chunk_n") == chunk_n:
+                has_tx = True
+        if not has_tx:
+            return False
         return entries[-1].get("hash") == head_hash
     except Exception:
         return False
@@ -550,6 +724,7 @@ class ChainDaemon:
             if p not in self.appenders:
                 has_items = (
                     (p / "chain.jsonl").exists()
+                    or (p / "optin.jsonl").exists()
                     or any(p.glob("[0-9]*.meta.json"))
                     or any(p.glob("[0-9]*.gap.json"))
                 )
@@ -581,10 +756,24 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default="data/witness", help="witness data root directory")
     ap.add_argument("--verify", metavar="STREAM_DIR", help="verify a single stream directory and exit")
+    ap.add_argument("--quarantine", nargs=2, metavar=("DIR", "SEQ"), help="quarantine corrupt unchained chunk SEQ in DIR")
     a = ap.parse_args()
 
+    if a.quarantine:
+        q_dir, q_seq_str = a.quarantine
+        try:
+            q_seq = int(q_seq_str)
+            gap_p = quarantine(Path(q_dir), q_seq)
+            print(f"QUARANTINED seq={q_seq:06d} -> {gap_p}")
+            sys.exit(0)
+        except Exception as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+
     if a.verify:
-        ok, problems = verify(Path(a.verify), check_files=True)
+        ok, problems, warnings = verify(Path(a.verify), check_files=True)
+        for w in warnings:
+            print(f"WARN: {w}")
         if ok:
             entries = load(a.verify)
             print(f"OK ({len(entries)} entries, head={entries[-1]['hash']})")

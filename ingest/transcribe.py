@@ -8,6 +8,7 @@ chunk k is transcribed with up to 2s of audio from chunk k-1 and k+1, and only w
 midpoint falls inside chunk k's own span [0, duration_s) are kept.
 """
 import argparse
+import fcntl
 import hashlib
 import io
 import json
@@ -26,11 +27,15 @@ N_MELS = 64
 WIN_LEN = 400   # 25 ms at 16 kHz
 HOP_LEN = 160   # 10 ms at 16 kHz
 N_FFT = 512
+RETRY_SCHEDULE_S = [30, 120, 600, 1800]
 
 
 def write_atomic(path: Path, data: bytes):
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(data)
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
@@ -170,7 +175,7 @@ def run_whisper(model, audio: np.ndarray, lang: str | None) -> list[dict]:
 
 
 def process_chunk(stream_dir: Path, seq: int, meta: dict, has_next_chunk: bool, transcribe_fn, model_name: str):
-    t0 = time.time()
+    t0 = time.monotonic()
     wav_path = stream_dir / f"{seq:06d}.wav"
     main_audio = read_wav(wav_path, expected_sha256=meta["sha256"])
     duration_s = float(meta["duration_s"])
@@ -207,25 +212,56 @@ def process_chunk(stream_dir: Path, seq: int, meta: dict, has_next_chunk: bool, 
     }
     out_path = stream_dir / f"{seq:06d}.json"
     write_atomic(out_path, json.dumps(record, indent=1).encode())
-    wall_s = time.time() - t0
+    wall_s = time.monotonic() - t0
     print(f"[{seq:06d}] {stream}  {len(words)} words  {duration_s:.1f}s audio  {wall_s:.2f}s wall", flush=True)
 
 
-def find_candidates(root: Path, bad: set[Path], once: bool) -> list[tuple[float, int, Path, dict, bool]]:
-    now = time.time()
+def _record_failure(meta_path: Path, err: Exception, retries: dict[Path, tuple[int, float]], gave_up: set[Path], now_mono: float):
+    count, _ = retries.get(meta_path, (0, 0.0))
+    if count >= len(RETRY_SCHEDULE_S):
+        retries.pop(meta_path, None)
+        gave_up.add(meta_path)
+        print(
+            f"GIVING UP on {meta_path} after {count + 1} failures (will not retry this run): {err}",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        delay = RETRY_SCHEDULE_S[count]
+        retries[meta_path] = (count + 1, now_mono + delay)
+        print(
+            f"ERROR processing {meta_path} (attempt {count + 1}/{len(RETRY_SCHEDULE_S) + 1}, retry in {delay}s): {err}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def find_candidates(
+    root: Path,
+    retries: dict[Path, tuple[int, float]],
+    gave_up: set[Path],
+    once: bool,
+    now_mono: float,
+    first_seen_mono: dict[Path, float],
+) -> list[tuple[float, int, Path, dict, bool]]:
+    now_wall = time.time()
     candidates = []
     if not root.exists():
         return candidates
-    for meta_path in sorted(root.glob("*/*.meta.json")):
-        if meta_path in bad:
+    for meta_path in sorted(root.glob("*/[0-9]*.meta.json")):
+        if meta_path in gave_up:
+            continue
+        if meta_path in retries and now_mono < retries[meta_path][1]:
             continue
         stream_dir = meta_path.parent
         try:
-            seq = int(meta_path.name[:6])
+            seq = int(meta_path.name.split(".")[0])
         except ValueError:
             continue
         out_path = stream_dir / f"{seq:06d}.json"
         if out_path.exists():
+            retries.pop(meta_path, None)
+            first_seen_mono.pop(meta_path, None)
             continue
         try:
             meta = json.loads(meta_path.read_text())
@@ -233,11 +269,15 @@ def find_candidates(root: Path, bad: set[Path], once: bool) -> list[tuple[float,
             duration_s = float(meta["duration_s"])
             sort_key = float(meta.get("received_utc_unix", mtime))
         except Exception as e:
-            print(f"error reading meta {meta_path}: {e}", file=sys.stderr, flush=True)
-            bad.add(meta_path)
+            _record_failure(meta_path, e, retries, gave_up, now_mono)
             continue
 
-        eligible, has_next = check_eligibility(stream_dir, seq, duration_s, mtime, now, once)
+        if meta_path not in first_seen_mono:
+            # Anchor initial file age from wall-clock mtime into monotonic time so eligibility uses monotonic time
+            initial_age = max(0.0, now_wall - mtime)
+            first_seen_mono[meta_path] = now_mono - initial_age
+
+        eligible, has_next = check_eligibility(stream_dir, seq, duration_s, first_seen_mono[meta_path], now_mono, once)
         if eligible:
             candidates.append((sort_key, seq, meta_path, meta, has_next))
 
@@ -245,22 +285,56 @@ def find_candidates(root: Path, bad: set[Path], once: bool) -> list[tuple[float,
     return candidates
 
 
-def run_worker(root: Path, transcribe_fn, model_name: str, once: bool = False):
-    bad: set[Path] = set()
-    while True:
-        candidates = find_candidates(root, bad, once=once)
-        if not candidates:
-            if once:
-                break
-            time.sleep(POLL_S)
-            continue
+def run_worker(
+    root: Path,
+    transcribe_fn,
+    model_name: str,
+    once: bool = False,
+    clock=time.monotonic,
+    sleep_fn=time.sleep,
+):
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / "transcribe.lock"
+    lock_fd = open(lock_path, "a+b")
+    try:
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_fd.close()
+        raise BlockingIOError(f"transcribe.lock already held in {root}")
 
-        _, seq, meta_path, meta, has_next = candidates[0]
+    retries: dict[Path, tuple[int, float]] = {}
+    gave_up: set[Path] = set()
+    first_seen_mono: dict[Path, float] = {}
+    try:
+        while True:
+            now_mono = clock()
+            candidates = find_candidates(root, retries, gave_up, once=once, now_mono=now_mono, first_seen_mono=first_seen_mono)
+            if not candidates:
+                if once and not retries:
+                    break
+                if once and retries:
+                    # In --once mode with pending retries, advance/wait until the next retry is due
+                    next_due = min(due for _, due in retries.values())
+                    wait_s = max(0.0, next_due - now_mono)
+                    sleep_fn(wait_s)
+                    continue
+                sleep_fn(POLL_S)
+                continue
+
+            _, seq, meta_path, meta, has_next = candidates[0]
+            try:
+                process_chunk(meta_path.parent, seq, meta, has_next, transcribe_fn, model_name)
+                retries.pop(meta_path, None)
+                first_seen_mono.pop(meta_path, None)
+            except Exception as e:
+                _record_failure(meta_path, e, retries, gave_up, clock())
+    finally:
         try:
-            process_chunk(meta_path.parent, seq, meta, has_next, transcribe_fn, model_name)
-        except Exception as e:
-            print(f"ERROR processing {meta_path}: {e}", file=sys.stderr, flush=True)
-            bad.add(meta_path)
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        lock_fd.close()
 
 
 def main():
@@ -279,6 +353,9 @@ def main():
 
     try:
         run_worker(Path(a.root), transcribe_fn, a.model, once=a.once)
+    except BlockingIOError as e:
+        print(f"ERROR: {e}", file=sys.stderr, flush=True)
+        sys.exit(1)
     except KeyboardInterrupt:
         pass
 

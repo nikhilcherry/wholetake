@@ -104,6 +104,7 @@ def main():
     text = turn(history)
     history.append({"role": "model", "parts": [{"text": text}]})
     conv.write_text(json.dumps(history))
+    (STATE / f"{task.stem}.last.md").write_text(text)  # full reply, for review-style tasks
 
     files = dict(re.findall(r"=== FILE: (.+?) ===\n(.*?)\n=== END ===", text, re.S))
     for path, body in files.items():

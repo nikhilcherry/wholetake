@@ -1,0 +1,14 @@
+[Unit]
+Description=Wholetake Transcription & Mel Fingerprint Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/wholetake
+ExecStart=%h/Projects/wholetake/py -m ingest.transcribe
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=3
+
+[Install]
+WantedBy=default.target
