@@ -1,0 +1,16 @@
+[Unit]
+Description=Wholetake Verdict HTTP Service (N3)
+After=network-online.target wholetake-chain.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/wholetake
+ExecStart=%h/Projects/wholetake/py -m verdict serve
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=WT_VERDICT_PORT=8790
+
+[Install]
+WantedBy=default.target

@@ -1,6 +1,6 @@
 # Wholetake Systemd Deployment
 
-User-level `systemd` units for witnessing streams, transcribing chunks, maintaining the hash chain, and anchoring chain heads on Base Sepolia (EAS) and Bitcoin (OpenTimestamps).
+User-level `systemd` units for witnessing streams, transcribing chunks, maintaining the hash chain, anchoring chain heads on Base Sepolia (EAS) and Bitcoin (OpenTimestamps), and serving clip verdicts.
 
 ## Anchor Wallet Setup (One-Time)
 
@@ -20,7 +20,7 @@ User-level `systemd` units for witnessing streams, transcribing chunks, maintain
 mkdir -p ~/.config/systemd/user ~/Projects/wholetake/deploy/streams
 cp ~/Projects/wholetake/deploy/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now wholetake-transcribe.service wholetake-chain.service wholetake-anchor.service
+systemctl --user enable --now wholetake-transcribe.service wholetake-chain.service wholetake-anchor.service wholetake-verdict.service
 loginctl enable-linger "$USER"
 ```
 
@@ -40,6 +40,20 @@ loginctl enable-linger "$USER"
    ```
    *(If the channel removes its claim code, the witness exits with status `3` and systemd will not restart it.)*
 
+## Verdict Service & CLI
+
+Check a clip URL or local file directly from the command line (writes `verdict.json` and prints the headline):
+
+```bash
+./py -m verdict check "https://www.youtube.com/watch?v=..." --out verdict.json
+```
+
+Or run the HTTP verdict service directly (listens on `127.0.0.1:8790` by default):
+
+```bash
+./py -m verdict serve
+```
+
 ## Verify Anchors
 
 To verify every on-chain anchor for a stream against local `chain.jsonl` and live Base Sepolia `getTimestamp`:
@@ -52,7 +66,7 @@ To verify every on-chain anchor for a stream against local `chain.jsonl` and liv
 
 ```bash
 systemctl --user status 'wholetake-*'
-journalctl --user -u wholetake-witness@creator -u wholetake-transcribe -u wholetake-chain -u wholetake-anchor -f
+journalctl --user -u wholetake-witness@creator -u wholetake-transcribe -u wholetake-chain -u wholetake-anchor -u wholetake-verdict -f
 ```
 
 ## Quarantine a Corrupt Unchained Chunk
