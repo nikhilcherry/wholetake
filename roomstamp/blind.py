@@ -332,6 +332,7 @@ def locate(scan: dict, F: np.ndarray, T: np.ndarray) -> dict:
 def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi: int, n_null: int = 200,
            tempos=TEMPOS, taus=TAUS, seed: int | None = None, pair: bool = True) -> dict:
     t0 = time.time()
+    clip = np.nan_to_num(np.asarray(clip, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
     n_null = max(2, int(n_null))
     dur = len(clip) / FS
     if dur < MIN_CLIP_S:
