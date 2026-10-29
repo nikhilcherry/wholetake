@@ -422,10 +422,20 @@ def summary(r: dict) -> str:
 # ---------------------------------------------------------------- CLI
 
 def _parse_time(s: str) -> int:
-    if s.isdigit():
-        return int(s)
+    import math
+    import re
+    s = s.strip()
+    if "_" not in s:
+        try:
+            v = float(s)
+        except ValueError:
+            pass
+        else:
+            if math.isfinite(v):
+                return int(v)
     from datetime import datetime, timezone
-    d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    iso = re.sub(r"\.(\d+)", lambda m: "." + m.group(1).ljust(6, "0")[:6], s.replace("Z", "+00:00").replace("z", "+00:00"))
+    d = datetime.fromisoformat(iso)
     if d.tzinfo is None:
         d = d.replace(tzinfo=timezone.utc)
     return int(d.timestamp())
