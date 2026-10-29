@@ -1,0 +1,34 @@
+# Git and virtual environments
+.git
+.gitignore
+.venv
+venv
+ENV
+
+# Python caches and build artifacts
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Secrets and keys (must be mounted at runtime, never baked into image)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+data/anchor.key
+data/claim.key
+keys/
+
+# Runtime state, logs, and large datasets
+logs/
+data/
+testdata/
+*.tmp
+*.bak
