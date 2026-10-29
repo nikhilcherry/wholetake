@@ -99,12 +99,20 @@ def read_log(path: str) -> tuple[dict, dict[int, dict]]:
                 print(f"warning: ignoring truncated final line in {path}", file=sys.stderr)
                 break
             raise
-        if r["type"] == "session":
+        if not isinstance(r, dict):
+            continue
+        rtype = r.get("type")
+        if rtype == "session":
             header = r
-            if r.get("warmup"):
-                secs[r["warmup"]["t"]] = r["warmup"]
-        elif r["type"] == "sec":
-            secs[r["t"]] = r
+            wu = r.get("warmup")
+            if isinstance(wu, dict):
+                wt = wu.get("t")
+                if isinstance(wt, int) and not isinstance(wt, bool):
+                    secs[wt] = wu
+        elif rtype == "sec":
+            t = r.get("t")
+            if isinstance(t, int) and not isinstance(t, bool):
+                secs[t] = r
     return header, secs
 
 
