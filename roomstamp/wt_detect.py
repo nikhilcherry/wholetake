@@ -156,7 +156,7 @@ def _decode_ffmpeg(path: str) -> tuple[np.ndarray, int, str]:
     return x, sr, codec
 
 
-def _downmix(x: np.ndarray, warnings: list[str]) -> np.ndarray:
+def _downmix(x: np.ndarray, warnings: list[str], sr: int = FS) -> np.ndarray:
     """Average two channels unless they would cancel (inverted/independent mics): then keep
     the channel with more 300-3400 Hz energy."""
     if x.shape[1] == 1:
@@ -164,12 +164,35 @@ def _downmix(x: np.ndarray, warnings: list[str]) -> np.ndarray:
     L, R = x[:, 0], x[:, 1]
     if np.allclose(L, R):
         return L.copy()
+    sos = SOS_L1
+    if sr != FS and sr > 700:
+        from scipy.signal import butter
+        sos = butter(4, [300.0, min(3400.0, 0.45 * sr)], btype="bandpass", fs=sr, output="sos")
     n = len(L)
-    a, b = max(0, n // 2 - 5 * FS), min(n, n // 2 + 5 * FS)
-    lb, rb = sosfilt(SOS_L1, L[a:b]), sosfilt(SOS_L1, R[a:b])
-    rho = float(np.sum(lb * rb) / (np.sqrt(np.sum(lb * lb) * np.sum(rb * rb)) + 1e-20))
+    blk = max(1, sr // 2)
+    nb = n // blk
+    if nb >= 2:
+        Lb = L[:nb * blk].reshape(nb, blk)
+        Rb = R[:nb * blk].reshape(nb, blk)
+        e = np.mean((Lb - Lb.mean(axis=1, keepdims=True)) ** 2 +
+                    (Rb - Rb.mean(axis=1, keepdims=True)) ** 2, axis=1)
+        emax = float(np.max(e))
+        if emax > 0:
+            keep = np.flatnonzero(e >= 0.05 * emax)
+            if len(keep) > 60:
+                top = np.argsort(e[keep])[-60:]
+                keep = np.sort(keep[top])
+            La = Lb[keep].reshape(-1)
+            Ra = Rb[keep].reshape(-1)
+        else:
+            La, Ra = L[:min(n, 10 * sr)], R[:min(n, 10 * sr)]
+    else:
+        La, Ra = L, R
+    lb, rb = sosfilt(sos, La), sosfilt(sos, Ra)
+    el, er = float(np.sum(lb * lb)), float(np.sum(rb * rb))
+    rho = float(np.sum(lb * rb) / (np.sqrt(el * er) + 1e-20))
     if rho < 0.3:
-        ch = 0 if np.sum(lb * lb) >= np.sum(rb * rb) else 1
+        ch = 0 if el >= er else 1
         warnings.append(f"stereo_phase_anomaly: channels correlate {rho:+.2f}; using channel {ch} only")
         return x[:, ch].copy()
     return 0.5 * (L + R)
@@ -191,7 +214,7 @@ def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
         raise ClipError("DECODE_FAILED", "non-finite audio samples")
     warnings: list[str] = []
     ch = x.shape[1]
-    m = _downmix(x[:, :2], warnings)
+    m = _downmix(x[:, :2], warnings, sr=sr)
     if sr != FS:
         g = int(np.gcd(sr, FS))
         m = resample_poly(m, FS // g, sr // g)
