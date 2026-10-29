@@ -18,8 +18,10 @@ T0 = 1793209200  # any nominal second; offline tests run unanchored
 
 def load_speech(path: str | None = None, seconds: float | None = None) -> np.ndarray:
     x = wavio.read(path or DEFAULT_SPEECH)
-    if seconds:
-        x = x[:int(seconds * FS)]
+    if seconds is not None:
+        x = x[:max(0, int(seconds * FS))]
+    if len(x) == 0:
+        return x
     return x / (np.sqrt(np.mean(x ** 2)) + 1e-12) * 10 ** (-20 / 20)  # -20 dBFS speech
 
 
