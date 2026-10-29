@@ -82,8 +82,13 @@ def wt_stage(clip_x48k: np.ndarray, witness_path: str) -> dict:
         cuts = [e for e in edits if e["kind"] == "cut"]
         cut_desc = "; ".join(f'{e["removed_s"]:.2f} s removed at {e["clip_t"]:.2f} s'
                              + (f' ("{e["restored_text"]}")' if e["restored_text"] else "") for e in cuts)
+        pause_trims = [e for e in edits if e["kind"] == "pause_trim"]
         if r["verdict"] == "faithful":
-            summary = "Continuous span of the witness record, nothing removed."
+            if pause_trims:
+                pt_desc = "; ".join(f'{e["removed_s"]:.2f} s pause trimmed at {e["clip_t"]:.2f} s' for e in pause_trims)
+                summary = f"Faithful to the witness record (pause trim: {pt_desc})."
+            else:
+                summary = "Continuous span of the witness record, nothing removed."
         elif r["verdict"] == "cut":
             summary = cut_desc
         else:
