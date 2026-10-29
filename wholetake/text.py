@@ -53,7 +53,7 @@ def romanise(word: str) -> str:
                 i += 1
             elif nxt == _VIRAMA:
                 i += 1
-            elif i + 1 < len(word) and nxt not in _DEV_NASAL:
+            elif (nxt in _DEV_CONS or nxt in _DEV_VOW or nxt in _DEV_MAT or nxt.isalnum()) and nxt not in _DEV_NASAL:
                 out.append("a")  # inherent schwa, dropped at word end
         elif ch in _DEV_VOW:
             out.append(_DEV_VOW[ch])
@@ -68,9 +68,10 @@ def romanise(word: str) -> str:
 def tokens(raw: str) -> list[str]:
     """One ASR word -> zero or more normalised tokens."""
     w = unicodedata.normalize("NFC", raw).strip().lower().replace("’", "'").replace("‘", "'")
-    w = romanise(w)
     out: list[str] = []
     for part in re.split(r"[-–—/]", w):
+        part = re.sub(r"[^\w\u0900-\u0963\u0966-\u097f']", "", part).strip("'")
+        part = romanise(part)
         part = re.sub(r"[^\w']", "", part).strip("'")
         if not part:
             continue
