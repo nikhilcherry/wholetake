@@ -160,6 +160,8 @@ def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
     except Exception:
         x, sr, codec = _decode_ffmpeg(path)
         decoder = "ffmpeg"
+    if not np.all(np.isfinite(x)):
+        raise ClipError("DECODE_FAILED", "non-finite audio samples")
     warnings: list[str] = []
     ch = x.shape[1]
     m = _downmix(x[:, :2], warnings)
