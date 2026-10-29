@@ -166,6 +166,8 @@ def band_power(cbp: tuple[np.ndarray, np.ndarray], n_samples: int, tempo: float 
     A clip sped up by `tempo` covers 10 ms of venue time in 10/tempo ms of clip time."""
     P, centres = cbp
     rows = int(n_samples * tempo // HOP)
+    if len(centres) == 0 or rows <= 0:
+        return np.zeros((max(0, rows), L2_NBANDS))
     at = (np.arange(rows) + 0.5) * HOP / tempo
     return np.stack([np.interp(at, centres, P[:, b]) for b in range(L2_NBANDS)], axis=1)
 
