@@ -470,7 +470,12 @@ class Channel:
         self._n = len(y)
 
     def _stft(self, x):
-        return stft(x, nperseg=self.nps, noverlap=self.nps - self.hop, boundary="zeros", padded=True)
+        x = np.asarray(x)
+        if x.shape[-1] < self.nps:
+            pad = [(0, 0)] * x.ndim
+            pad[-1] = (0, self.nps - x.shape[-1])
+            x = np.pad(x, pad)
+        return stft(x, nperseg=self.nps, noverlap=self.nps - self.hop, nfft=self.nps, boundary="zeros", padded=True)
 
     def _istft(self, X, n):
         _, x = istft(X, nperseg=self.nps, noverlap=self.nps - self.hop, boundary=True)
