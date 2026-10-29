@@ -354,10 +354,12 @@ def _feed_env(path: str) -> tuple[np.ndarray, float]:
 def _hp_env(e: np.ndarray) -> np.ndarray:
     if len(e) == 0:
         return e
-    floor = np.percentile(e, 20)
+    active = e[e >= np.percentile(e, 95) - 3.0]
+    floor = np.percentile(active if len(active) else e, 20)
     e = np.maximum(e, floor)                       # pauses -> floor, so silence doesn't dominate
     k = np.ones(101) / 101
-    return e - np.convolve(e, k, mode="same")
+    pad = np.pad(e, 50, mode="edge")
+    return e - np.convolve(pad, k, mode="valid")
 
 
 def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
@@ -377,10 +379,21 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
     c = fftconvolve(fe, ce[::-1], mode="full")    # index i -> clip frame 0 at feed frame i - (len(ce) - 1)
     lags = np.arange(len(c)) - (len(ce) - 1)
     overlap = np.minimum(lags + len(ce), len(fe)) - np.maximum(lags, 0)
-    ok = overlap >= 0.5 * min(len(ce), len(fe))
+    min_ov = max(int(MIN_CLIP_S * FS // ENV_HOP), int(0.2 * min(len(ce), len(fe))))
+    c0 = np.maximum(0, -lags)
+    c1 = np.minimum(len(ce), len(fe) - lags)
+    f0 = np.maximum(0, lags)
+    f1 = np.minimum(len(fe), lags + len(ce))
+    ce_cs = np.concatenate(([0.0], np.cumsum(ce * ce)))
+    fe_cs = np.concatenate(([0.0], np.cumsum(fe * fe)))
+    ov = np.maximum(overlap, 1)
+    e_ce = ce_cs[c1] - ce_cs[c0]
+    e_fe = fe_cs[f1] - fe_cs[f0]
+    ok = (overlap >= min_ov) & (e_ce > 1e-6 * ov) & (e_fe > 1e-6 * ov)
     if not ok.any():
         return
-    cv = np.where(ok, c / np.sqrt(np.maximum(overlap, 1)), np.nan)
+    denom = np.sqrt(np.maximum(e_ce * e_fe, 1e-12))
+    cv = np.where(ok, (c / denom) * np.sqrt(ov), np.nan)
     v = cv[ok]
     sig = 1.4826 * np.median(np.abs(v - np.median(v))) + 1e-12
     i = int(np.nanargmax(cv))
@@ -389,15 +402,20 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
     lo, hi = sl.feed_offset_s, sl.feed_offset_s + len(clip_x) / FS
     w = min(500, len(ce) // 2)
     if w >= 200 and len(fe) >= w:
-        for sub, pad in ((ce[:w], 0.0), (ce[-w:], w * ENV_HOP / FS)):
+        for sub, pad, off_s in ((ce[:w], 0.0, 0.0), (ce[-w:], w * ENV_HOP / FS, (len(ce) - w) * ENV_HOP / FS)):
             if np.std(sub) < 1e-3:
                 continue
             cs = fftconvolve(fe, sub[::-1], mode="valid")
             ms = np.median(cs)
             ss = 1.4826 * np.median(np.abs(cs - ms)) + 1e-12
             j = int(np.argmax(cs))
-            if (cs[j] - ms) / ss >= ENV_Z_MIN:
+            z_sub = float((cs[j] - ms) / ss)
+            if z_sub >= ENV_Z_MIN:
                 t_sub = float(j * ENV_HOP / FS)
+                if sl.env_z < ENV_Z_MIN and z_sub > sl.env_z:
+                    sl.env_z = z_sub
+                    sl.feed_offset_s = t_sub - off_s
+                    lo, hi = sl.feed_offset_s, sl.feed_offset_s + len(clip_x) / FS
                 lo, hi = min(lo, t_sub), max(hi, t_sub + pad)
     sl.feed_span_s = (lo, hi)
 
