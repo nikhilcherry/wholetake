@@ -696,17 +696,19 @@ def _edit_summary(edits: list[dict]) -> str:
     parts = []
     if len(cuts) == 1:
         e = cuts[0]
-        if e["source"] == "l2":
+        rem = float(e.get("removed_s") or 0.0)
+        if e.get("source") == "l2":
             a, b = e["clip_t_range"]
-            parts.append(f"About {e['removed_s']:.1f} s removed between {fmt_clock(a)} and {fmt_clock(b)}")
+            parts.append(f"About {rem:.1f} s removed between {fmt_clock(a)} and {fmt_clock(b)}")
         else:
-            parts.append(f"{e['removed_s']:.2f} s removed at {fmt_clock(e['clip_t'])}")
+            parts.append(f"{rem:.2f} s removed at {fmt_clock(e['clip_t'])}")
     elif cuts:
-        tot = sum(e["removed_s"] for e in cuts)
+        tot = sum(float(e.get("removed_s") or 0.0) for e in cuts)
         parts.append(f"{len(cuts)} cuts ({tot:.2f} s removed in total, first at {fmt_clock(cuts[0]['clip_t'])})")
     for e in other:
         if e["kind"] == "repeated":
-            parts.append(f"{-e['removed_s']:.2f} s repeated at {fmt_clock(e['clip_t'])}")
+            rem = float(e.get("removed_s") or 0.0)
+            parts.append(f"{-rem:.2f} s repeated at {fmt_clock(e['clip_t'])}")
         elif e["kind"] == "replaced" and e.get("source_offset_s") is not None:
             off = e["source_offset_s"]
             parts.append(f"{(e.get('duration_s') or 0):.2f} s at {fmt_clock(e['clip_t'])} replaced with audio from "
