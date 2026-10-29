@@ -710,6 +710,15 @@ def fmt_clock(s: float) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+def _kinds_compatible(k1: str | None, k2: str | None) -> bool:
+    if k1 == k2:
+        return True
+    for group in ({"removed", "reordered"}, {"foreign", "inserted", "replaced"}):
+        if k1 in group and k2 in group:
+            return True
+    return False
+
+
 def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
     """Precise sources win; a coarser edit near a precise one is the same edit."""
     warns = []
@@ -742,7 +751,11 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
         lo, hi = (e.get("clip_t_range") or [e["clip_t"], e["clip_t"]])
         dup = None
         for k in out:
-            if rank[k["source"]] < rank[e["source"]] and lo - 2.0 <= k["clip_t"] <= hi + 2.0:
+            if (
+                rank[k["source"]] < rank[e["source"]]
+                and _kinds_compatible(k.get("kind"), e.get("kind"))
+                and lo - 2.0 <= k["clip_t"] <= hi + 2.0
+            ):
                 dup = k
                 break
         if dup is None:

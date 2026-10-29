@@ -639,9 +639,9 @@ def render_dashboard_page(manager, selected_id: str | None = None) -> str:
         )
     demos_html = "".join(demo_btns)
 
-    s0 = sessions[0] if sessions else None
-    st0 = streams[0] if streams else None
-    anc0 = (st0 or {}).get("latest_anchor") if st0 else None
+    s0 = sessions[0] if sessions else {}
+    st0 = streams[0] if streams else {}
+    anc0 = st0.get("latest_anchor") or {}
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1102,8 +1102,8 @@ def render_dashboard_page(manager, selected_id: str | None = None) -> str:
         <span>Roomstamp S1 Stage Emitter</span>
         <span class="sys-badge">{'● ACTIVE' if det['roomstamp_online'] else '○ STANDBY'}</span>
       </div>
-      <div class="sys-line">Venue: {_esc((s0 or {{}}).get('venue') or 'HH Goa Main Stage')} (mode: {_esc((s0 or {{}}).get('mode') or 'pa')})</div>
-      <div class="sys-line">Key ID: {_esc((s0 or {{}}).get('key_id') or 'none')} · drand: {_esc((s0 or {{}}).get('drand_chain') or '52db9ba70e0cc0f6')}…</div>
+      <div class="sys-line">Venue: {_esc(s0.get('venue') or 'HH Goa Main Stage')} (mode: {_esc(s0.get('mode') or 'pa')})</div>
+      <div class="sys-line">Key ID: {_esc(s0.get('key_id') or 'none')} · drand: {_esc(s0.get('drand_chain') or '52db9ba70e0cc0f6')}…</div>
       <div class="sys-line">Passband: {_esc(det["l1_band_hz"])}</div>
     </div>
     <div class="sys-card">
@@ -1111,8 +1111,8 @@ def render_dashboard_page(manager, selected_id: str | None = None) -> str:
         <span>Witness Ingest &amp; Hash-Chain</span>
         <span class="sys-badge">{len(streams)} STREAM(S)</span>
       </div>
-      <div class="sys-line">Stream: {_esc((st0 or {{}}).get('name') or 'hhgoa-stage')} ({(st0 or {{}}).get('chunks', 0)} chunks, {(st0 or {{}}).get('gaps', 0)} gaps)</div>
-      <div class="sys-line">Chain head (n={(st0 or {{}}).get('head_n', 0)}): {_esc(str((st0 or {{}}).get('head_hash') or '')[:18])}…</div>
+      <div class="sys-line">Stream: {_esc(st0.get('name') or 'hhgoa-stage')} ({st0.get('chunks', 0)} chunks, {st0.get('gaps', 0)} gaps)</div>
+      <div class="sys-line">Chain head (n={st0.get('head_n', 0)}): {_esc(str(st0.get('head_hash') or '')[:18])}…</div>
       <div class="sys-line">Matcher: S4 100 fps 40-band log-mel + Whisper tokens</div>
     </div>
     <div class="sys-card">
@@ -1120,8 +1120,8 @@ def render_dashboard_page(manager, selected_id: str | None = None) -> str:
         <span>Base Sepolia EAS Anchor</span>
         <span class="sys-badge">{'● PINNED' if anc0 else '○ PENDING'}</span>
       </div>
-      <div class="sys-line">Block: #{_esc((anc0 or {{}}).get('block_number') or '—')} · {_esc((anc0 or {{}}).get('onchain_utc') or 'awaiting batch')}</div>
-      <div class="sys-line">Tx: {_esc(str((anc0 or {{}}).get('tx_hash') or 'none')[:22])}…</div>
+      <div class="sys-line">Block: #{_esc(anc0.get('block_number') or '—')} · {_esc(anc0.get('onchain_utc') or 'awaiting batch')}</div>
+      <div class="sys-line">Tx: {_esc(str(anc0.get('tx_hash') or 'none')[:22])}…</div>
       <div class="sys-line">Detector: {_esc(det["command"].split()[-1])}@{_esc(det["commit"][:7])}</div>
     </div>
   </div>
