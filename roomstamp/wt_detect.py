@@ -1021,13 +1021,15 @@ def _restore_audio(doc: dict, sl: SessionLog | None, out_path: str | None) -> No
     from . import wavio
     stem = os.path.splitext(os.path.abspath(out_path))[0]
     for i, e in enumerate(doc["layers"]["l1"].get("edits") or []):  # fuse() copies these into the verdict
-        if e["source"] != "l1" or e["kind"] != "removed" or e.get("venue_t_from") is None:
+        if e["source"] != "l1" or e["kind"] != "removed" or e.get("venue_t_from") is None or e.get("venue_t_to") is None:
             continue
         a = (e["venue_t_from"] - 1.5 - sl.t_start) * FS
         b = (e["venue_t_to"] + 1.5 - sl.t_start) * FS
         try:
             s0 = max(0, int(a))
             x = _read_feed(sl.feed_path, s0, max(0, int(b)))
+            if len(x) == 0:
+                continue
             path = f"{stem}_edit{i}.wav"
             pk = np.max(np.abs(x)) + 1e-9
             wavio.write(path, x * min(1.0, 0.9 / pk))
