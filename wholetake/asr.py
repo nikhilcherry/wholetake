@@ -33,23 +33,31 @@ class Word:
 
 
 def model():
-    global _model
+    global _model, MODEL
+    if MODEL == "none":
+        return None
     if _model is None:
         try:
             import torch  # noqa: F401  (puts cuBLAS/cuDNN on the DLL path for ctranslate2 on Windows)
             cuda = torch.cuda.is_available()
         except ImportError:
             cuda = False
-        from faster_whisper import WhisperModel
-        _model = WhisperModel(MODEL, device="cuda" if cuda else "cpu", compute_type="float16" if cuda else "int8")
+        try:
+            from faster_whisper import WhisperModel
+            _model = WhisperModel(MODEL, device="cuda" if cuda else "cpu", compute_type="float16" if cuda else "int8",
+                                  local_files_only=True)
+        except Exception:
+            MODEL = "none"
+            return None
     return _model
 
 
 def transcribe(x: np.ndarray, language: str | None = "en") -> list[Word]:
-    if MODEL == "none":  # acoustic-only mode (records up to 20 min are searched without text)
+    m = model()
+    if m is None:  # acoustic-only mode (records up to 20 min are searched without text)
         return []
-    segs, _ = model().transcribe(np.asarray(x, dtype=np.float32), language=language, word_timestamps=True,
-                                 vad_filter=True, condition_on_previous_text=False, beam_size=5, temperature=0.0)
+    segs, _ = m.transcribe(np.asarray(x, dtype=np.float32), language=language, word_timestamps=True,
+                           vad_filter=True, condition_on_previous_text=False, beam_size=5, temperature=0.0)
     out: list[Word] = []
     for s in segs:
         for w in s.words or []:
