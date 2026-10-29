@@ -81,7 +81,7 @@ class RandomnessSource:
         if cache_path and os.path.exists(cache_path):
             with open(cache_path, encoding="utf-8") as f:
                 for k, v in json.load(f).items():
-                    self.by_round.setdefault(int(k), bytes.fromhex(v))
+                    self.by_round.setdefault(int(k), bytes.fromhex(v) if v is not None else None)
 
     def log_span(self) -> tuple[int, int] | None:
         return (min(self.by_sec), max(self.by_sec) + 1) if self.by_sec else None
