@@ -68,8 +68,8 @@ def wt_stage(clip_x48k: np.ndarray, witness_path: str) -> dict:
         if r["decisive_words_removed"]:
             summary += f' — removed: {", ".join(r["decisive_words_removed"])}'
     t0 = rec.meta.get("t_start_unix")
-    vs = pieces[0]["witness_start_s"] if pieces else None
-    ve = pieces[-1]["witness_end_s"] if pieces else None
+    vs = min(p["witness_start_s"] for p in pieces) if pieces else None
+    ve = max(p["witness_end_s"] for p in pieces) if pieces else None
     return {"status": status, "summary": summary, "edits": edits,
             "recorded_at_unix": (t0 + vs) if (t0 is not None and vs is not None) else None,
             "venue_t_start": vs, "venue_t_end": ve, "transcript": r["clip_transcript"],

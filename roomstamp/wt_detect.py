@@ -819,17 +819,29 @@ def _proof(sl: SessionLog | None, doc: dict, clip: Clip) -> dict:
          "normalized_format": "float32le mono 48000 Hz", "matched_t_range": None, "drand_rounds": [],
          "anchors": [], "merkle": None}
     v = doc["verdict"]
-    lay = [doc["layers"].get(k) or {} for k in ("l1", "l2", "wt")]
-    t0s = [x["venue_t_start"] for x in lay if x.get("venue_t_start") is not None and x.get("status") != "absent"]
-    t1s = [x["venue_t_end"] for x in lay if x.get("venue_t_end") is not None and x.get("status") != "absent"]
-    if sl and t0s and t1s and v["recorded_here"] in ("verified", "likely", "not_verified"):
-        a, b = int(np.floor(min(t0s))), int(np.ceil(max(t1s)))
-        d["matched_t_range"] = [a, b]
-        secs = [s for s in sl.secs if a <= s["t"] < b]
-        d["anchors"] = [{"t": s["t"], "round": s.get("round"), "anchored": s.get("anchored"),
-                         "randomness": s.get("randomness"), "anchor": s.get("anchor"),
-                         "dac_utc": s.get("dac_utc")} for s in secs]
-        d["drand_rounds"] = sorted({s["round"] for s in secs if s.get("round") is not None and s.get("anchored")})
+    src = v.get("recorded_at_source")
+    cand_keys = ([src] if src in ("l1", "l2", "wt") else []) + [k for k in ("l1", "l2", "wt") if k != src]
+    t0 = t1 = None
+    if sl:
+        for k in cand_keys:
+            st = doc["layers"].get(k) or {}
+            if st.get("status") == "absent":
+                continue
+            vt0, vt1 = st.get("venue_t_start"), st.get("venue_t_end")
+            if vt0 is not None and vt1 is not None:
+                lo, hi = min(vt0, vt1), max(vt0, vt1)
+                if hi > sl.t_start and lo < sl.t_end:
+                    t0, t1 = max(float(sl.t_start), lo), min(float(sl.t_end), hi)
+                    break
+    if sl and t0 is not None and t1 is not None and v["recorded_here"] in ("verified", "likely", "not_verified"):
+        a, b = max(sl.t_start, int(np.floor(t0))), min(sl.t_end, int(np.ceil(t1)))
+        if a < b:
+            d["matched_t_range"] = [a, b]
+            secs = [s for s in sl.secs if a <= s["t"] < b]
+            d["anchors"] = [{"t": s["t"], "round": s.get("round"), "anchored": s.get("anchored"),
+                             "randomness": s.get("randomness"), "anchor": s.get("anchor"),
+                             "dac_utc": s.get("dac_utc")} for s in secs]
+            d["drand_rounds"] = sorted({s["round"] for s in secs if s.get("round") is not None and s.get("anchored")})
     return d
 
 
