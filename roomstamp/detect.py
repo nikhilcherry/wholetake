@@ -70,7 +70,8 @@ def layer1(res: np.ndarray, stamp: np.ndarray) -> dict:
         a, b = (w - 1) * FS, (w + 2) * FS
         ref = np.zeros(3 * FS)
         lo, hi = max(a, 0), min(b, len(stamp))
-        ref[lo - a:hi - a] = stamp[lo:hi]
+        if hi > lo:
+            ref[lo - a:hi - a] = stamp[lo:hi]
         # c[k] = sum_n seg[n] * ref[n + k], k = 0..2FS  (k = FS is zero lag)
         cs.append(fftconvolve(ref, seg[::-1], mode="valid"))
     if not cs:
