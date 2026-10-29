@@ -63,7 +63,8 @@ def cmd_render(a) -> None:
         return cache[r]
 
     wu = engine.KeystreamSequencer(key, t0, 0.0, lookup).warmup
-    out, _, secs = engine.render(x, key, t0, p, lookup, return_parts=True)
+    states: list[tuple[float, float]] = []
+    out, _, secs = engine.render(x, key, t0, p, lookup, return_parts=True, states=states)
     wavio.write(a.wav_out, out)
     log = os.path.splitext(a.wav_out)[0] + ".jsonl"
     feed = os.path.splitext(a.wav_out)[0] + "_feed.wav"
@@ -75,9 +76,10 @@ def cmd_render(a) -> None:
                             "warmup": {"t": wu.t, "round": wu.round, "anchored": wu.anchored,
                                        "randomness": wu.randomness.hex() if wu.randomness else None},
                             "feed_source": "wav", "offline_render": True}) + "\n")
-        for s in secs:
+        for s, (ref_rms, gain) in zip(secs, states):
             f.write(json.dumps({"type": "sec", "t": s.t, "round": s.round, "anchored": s.anchored,
-                                "randomness": s.randomness.hex() if s.randomness else None, "anchor": s.anchor}) + "\n")
+                                "randomness": s.randomness.hex() if s.randomness else None, "anchor": s.anchor,
+                                "ref_rms": ref_rms, "gain": gain}) + "\n")
     n_anch = sum(s.anchored for s in secs)
     print(f"wrote {a.wav_out} ({len(out) / FS:.1f}s, {n_anch}/{len(secs)} seconds anchored), {feed}, {log}")
 

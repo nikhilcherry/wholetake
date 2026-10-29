@@ -179,7 +179,8 @@ class KeystreamSequencer:
 
 
 def render(x: np.ndarray, key: bytes, t_start: int, params: StampParams, randomness_for_second=lambda t: None,
-           return_parts: bool = False, ref_rms: float | None = None, gain: float | None = None):
+           return_parts: bool = False, ref_rms: float | None = None, gain: float | None = None,
+           states: list[tuple[float, float]] | None = None):
     """Offline render through the exact real-time code path. len(x) is padded to whole seconds.
     For a mid-session section pass the logged ref_rms/gain of its first second."""
     n_sec = -(-len(x) // FS)
@@ -193,6 +194,8 @@ def render(x: np.ndarray, key: bytes, t_start: int, params: StampParams, randomn
     for s in range(n_sec):
         sec = seq.next()
         seconds.append(sec.ks)
+        if states is not None:
+            states.append((eng.ref_rms, eng.gain))
         for pos in range(0, FS, BLOCK):
             i = s * FS + pos
             o, sp, _ = eng.process(xp[i:i + BLOCK], sec, pos)
