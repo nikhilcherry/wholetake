@@ -107,13 +107,36 @@ def _decode_soundfile(path: str) -> tuple[np.ndarray, int, str]:
 
 
 _STREAM_RE = re.compile(r"Stream #\d+:\d+.*?: Audio: ([^,\s]+).*?, (\d+) Hz, ([^,]+)")
+_LAYOUT_CHANNELS = {
+    "mono": 1,
+    "stereo": 2,
+    "downmix": 2,
+    "quad": 4,
+    "hexagonal": 6,
+    "octagonal": 8,
+    "cube": 8,
+    "hexadecagonal": 16,
+}
+
+
+def _parse_channels(layout: str) -> int:
+    base = layout.strip().lower().split("(", 1)[0].strip()
+    if base in _LAYOUT_CHANNELS:
+        return _LAYOUT_CHANNELS[base]
+    m = re.match(r"^(\d+)\s*(?:channels?|ch)?$", base)
+    if m:
+        return max(1, int(m.group(1)))
+    m = re.match(r"^(\d+(?:\.\d+)+)$", base)
+    if m:
+        return max(1, sum(int(part) for part in m.group(1).split(".")))
+    return 2
 
 
 def _decode_ffmpeg(path: str) -> tuple[np.ndarray, int, str]:
-    """Native rate, up to 2 channels, float32 (resampling is done in Python: deterministic)."""
+    """Native rate and channels, float32 (downmix and resampling are done in Python: deterministic)."""
     from .media import ffmpeg_exe
     exe = ffmpeg_exe()
-    p = subprocess.run([exe, "-hide_banner", "-nostdin", "-i", path, "-map", "0:a:0", "-ac", "2",
+    p = subprocess.run([exe, "-hide_banner", "-nostdin", "-i", path, "-map", "0:a:0",
                         "-f", "f32le", "-c:a", "pcm_f32le", "-"], capture_output=True)
     err = p.stderr.decode(errors="replace")
     if p.returncode != 0 or not p.stdout:
@@ -124,9 +147,12 @@ def _decode_ffmpeg(path: str) -> tuple[np.ndarray, int, str]:
     if not m:
         raise ClipError("DECODE_FAILED", "could not read the audio stream's sample rate")
     codec, sr, layout = m.group(1), int(m.group(2)), m.group(3).strip()
-    x = np.frombuffer(p.stdout, dtype="<f4").astype(np.float64).reshape(-1, 2)
-    if layout == "mono":
-        x = x[:, :1]
+    ch = _parse_channels(layout)
+    raw = np.frombuffer(p.stdout, dtype="<f4")
+    n = (len(raw) // ch) * ch
+    if n == 0:
+        raise ClipError("DECODE_FAILED", "decoded audio stream is empty")
+    x = raw[:n].astype(np.float64).reshape(-1, ch)
     return x, sr, codec
 
 
