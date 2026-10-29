@@ -132,7 +132,7 @@ def _tempo_from_text(pieces, cw, ww) -> float | None:
 
 def warp(F: np.ndarray, alpha: float) -> np.ndarray:
     """Clip features resampled in time so one frame = one witness frame (alpha = clip speed-up)."""
-    if abs(alpha - 1.0) < 1e-6:
+    if len(F) == 0 or abs(alpha - 1.0) < 1e-6:
         return F
     T = len(F)
     n = max(1, int(round(T * alpha)))

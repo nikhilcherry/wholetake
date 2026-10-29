@@ -55,7 +55,12 @@ MEL_FB = _mel_fb()
 
 def logmel(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """(frames, 40) raw log-mel in dB and per-frame energy in dB; frame k is centred at k / FPS s."""
-    _, _, Z = stft(np.asarray(x, dtype=np.float64), fs=SR, window="hann", nperseg=NFFT, noverlap=NFFT - HOP,
+    x = np.asarray(x, dtype=np.float64).ravel()
+    if len(x) == 0:
+        return np.zeros((0, NMELS), dtype=np.float64), np.zeros((0,), dtype=np.float64)
+    if len(x) < NFFT:
+        x = np.pad(x, (0, NFFT - len(x)))
+    _, _, Z = stft(x, fs=SR, window="hann", nperseg=NFFT, noverlap=NFFT - HOP,
                    boundary="even", padded=True)
     p = (np.abs(Z) ** 2).T
     mel = 10.0 * np.log10(p @ MEL_FB.T + 1e-10)
@@ -66,6 +71,8 @@ def logmel(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def features(x: np.ndarray) -> np.ndarray:
     """(frames, 40) float32 unit-norm channel-normalised log-mel (zero rows in silence)."""
     mel, energy = logmel(x)
+    if len(mel) == 0:
+        return np.zeros((0, NMELS), dtype=np.float32)
     mel = mel - uniform_filter1d(mel, size=int(CMVN_S * FPS), axis=0, mode="nearest")
     mel /= np.linalg.norm(mel, axis=1, keepdims=True) + 1e-9
     loud = np.percentile(energy, 95) if len(energy) else 0.0
