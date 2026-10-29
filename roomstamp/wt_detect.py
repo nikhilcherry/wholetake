@@ -419,6 +419,14 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
     f1 = np.minimum(len(fe), lags + len(ce))
     ce_cs = np.concatenate(([0.0], np.cumsum(ce * ce)))
     fe_cs = np.concatenate(([0.0], np.cumsum(fe * fe)))
+    ce_nz = (np.abs(ce) > 1e-6).astype(np.float64)
+    fe_nz = (np.abs(fe) > 1e-6).astype(np.float64)
+    ce_nz_cs = np.concatenate(([0.0], np.cumsum(ce_nz)))
+    fe_nz_cs = np.concatenate(([0.0], np.cumsum(fe_nz)))
+    n_ce = ce_nz_cs[c1] - ce_nz_cs[c0]
+    n_fe = fe_nz_cs[f1] - fe_nz_cs[f0]
+    ov_act = np.maximum(np.minimum(n_ce, n_fe), 1.0)
+    ov_both = np.maximum(fftconvolve(fe_nz, ce_nz[::-1], mode="full"), 0.0)
     ov = np.maximum(overlap, 1)
     e_ce = ce_cs[c1] - ce_cs[c0]
     e_fe = fe_cs[f1] - fe_cs[f0]
@@ -426,21 +434,45 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
     if not ok.any():
         return
     denom = np.sqrt(np.maximum(e_ce * e_fe, 1e-12))
-    cv = np.where(ok, (c / denom) * np.sqrt(ov), np.nan)
+    cv = np.where(ok, (c / denom) * np.sqrt(ov_act), np.nan)
     v = cv[ok]
-    sig = 1.4826 * np.median(np.abs(v - np.median(v))) + 1e-12
+    med = float(np.median(v))
+    mad_sig = 1.4826 * float(np.median(np.abs(v - med)))
+    alpha = np.clip((ov_both[ok] * ov_act[ok]) / np.maximum(n_ce[ok] * n_fe[ok], 1.0), 0.0, 1.0)
+    mean_alpha = max(float(np.mean(alpha)), 1e-6)
+    std_sig = float(np.std(v)) / np.sqrt(mean_alpha)
+    vnz = v[np.abs(v) > 1e-9]
+    nz_sig = float(np.std(vnz)) if len(vnz) >= 10 else 0.0
+    sig = max(mad_sig, std_sig, nz_sig, 1.0) + 1e-12
     i = int(np.nanargmax(cv))
-    sl.env_z = float((cv[i] - np.median(v)) / sig)
+    sl.env_z = float((cv[i] - med) / sig)
     sl.feed_offset_s = float(lags[i] * ENV_HOP / FS)
     lo, hi = sl.feed_offset_s, sl.feed_offset_s + len(clip_x) / FS
     w = min(500, len(ce) // 2)
     if w >= 200 and len(fe) >= w:
+        fe_w_e = np.maximum(fe_cs[w:] - fe_cs[:-w], 0.0)
+        fe_w_n = np.maximum(fe_nz_cs[w:] - fe_nz_cs[:-w], 0.0)
         for sub, pad, off_s in ((ce[:w], 0.0, 0.0), (ce[-w:], w * ENV_HOP / FS, (len(ce) - w) * ENV_HOP / FS)):
-            if np.std(sub) < 1e-3:
+            sub_e = float(np.sum(sub * sub))
+            sub_n = float(np.sum(np.abs(sub) > 1e-6))
+            if np.std(sub) < 1e-3 or sub_e <= 1e-6 * w or sub_n < 50:
                 continue
-            cs = fftconvolve(fe, sub[::-1], mode="valid")
-            ms = np.median(cs)
-            ss = 1.4826 * np.median(np.abs(cs - ms)) + 1e-12
+            cs_raw = fftconvolve(fe, sub[::-1], mode="valid")
+            ok_s = fe_w_e > 1e-6 * w
+            if not ok_s.any():
+                continue
+            ov_s = np.maximum(np.minimum(sub_n, fe_w_n), 1.0)
+            denom_s = np.sqrt(np.maximum(sub_e * fe_w_e, 1e-12))
+            cs = np.where(ok_s, (cs_raw / denom_s) * np.sqrt(ov_s), 0.0)
+            vs = cs[ok_s]
+            ms = float(np.median(vs))
+            mad_s = 1.4826 * float(np.median(np.abs(vs - ms)))
+            ov_both_s = np.maximum(fftconvolve(fe_nz, (np.abs(sub) > 1e-6).astype(np.float64)[::-1], mode="valid"), 0.0)
+            alpha_s = np.clip((ov_both_s[ok_s] * ov_s[ok_s]) / np.maximum(sub_n * fe_w_n[ok_s], 1.0), 0.0, 1.0)
+            std_s = float(np.std(vs)) / np.sqrt(max(float(np.mean(alpha_s)), 1e-6))
+            vsnz = vs[np.abs(vs) > 1e-9]
+            nz_s = float(np.std(vsnz)) if len(vsnz) >= 10 else 0.0
+            ss = max(mad_s, std_s, nz_s, 1.0) + 1e-12
             j = int(np.argmax(cs))
             z_sub = float((cs[j] - ms) / ss)
             if z_sub >= ENV_Z_MIN:
