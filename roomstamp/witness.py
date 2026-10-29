@@ -80,13 +80,16 @@ def wt_stage(clip_x48k: np.ndarray, witness_path: str) -> dict:
         strong = covered >= 0.5 * r["clip_duration_s"] and np.median([p["similarity"] for p in pieces]) >= 0.45
         status = "present" if strong else "likely"
         cuts = [e for e in edits if e["kind"] == "cut"]
+        cut_desc = "; ".join(f'{e["removed_s"]:.2f} s removed at {e["clip_t"]:.2f} s'
+                             + (f' ("{e["restored_text"]}")' if e["restored_text"] else "") for e in cuts)
         if r["verdict"] == "faithful":
             summary = "Continuous span of the witness record, nothing removed."
         elif r["verdict"] == "cut":
-            summary = "; ".join(f'{e["removed_s"]:.2f} s removed at {e["clip_t"]:.2f} s'
-                                + (f' ("{e["restored_text"]}")' if e["restored_text"] else "") for e in cuts)
+            summary = cut_desc
         else:
-            summary = "Spliced: " + ", ".join(sorted({e["kind"] for e in edits if e["kind"] not in ("cut", "pause_trim")}))
+            summary = "Spliced: " + ", ".join(sorted({e["kind"] for e in edits if e["kind"] != "pause_trim"}))
+            if cut_desc:
+                summary += f" ({cut_desc})"
         if r["decisive_words_removed"]:
             summary += f' — removed: {", ".join(r["decisive_words_removed"])}'
     t0 = rec.meta.get("t_start_unix")
