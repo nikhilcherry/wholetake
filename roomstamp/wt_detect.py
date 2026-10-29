@@ -758,10 +758,27 @@ def fuse(doc: dict) -> dict:
     else:
         integrity = "unknown"
     when = fmt_time(wall) if wall is not None else None
+    proof = doc.get("proof")
+    unanchored = False
+    if isinstance(proof, dict) and proof.get("session_id") is not None:
+        af = proof.get("anchored_fraction")
+        if not proof.get("drand_rounds") or (af is not None and af == 0.0):
+            unanchored = True
+        elif af is not None and af < 0.5:
+            warns.append(
+                f"unanchored_session: only {af * 100:.0f}% of matched seconds are drand-anchored"
+            )
 
     es = _edit_summary(edits)
     if recorded == "verified":
-        head = f"Recorded at {vname}, {when}."
+        if unanchored:
+            warns.append(
+                "unanchored_session: 0% of matched seconds are drand-anchored; "
+                "proves key possession only, not wall-clock time"
+            )
+            head = f"Recorded at {vname}, {when} (unanchored: time not verified)."
+        else:
+            head = f"Recorded at {vname}, {when}."
         if integrity == "edited":
             head += f" {es}."
         elif integrity == "intact":
@@ -771,6 +788,11 @@ def fuse(doc: dict) -> dict:
         if edits and edits[0].get("restored_text"):
             head += f' Missing words: "{edits[0]["restored_text"]}".'
     elif recorded == "likely":
+        if unanchored:
+            warns.append(
+                "unanchored_session: 0% of matched seconds are drand-anchored; "
+                "proves key possession only, not wall-clock time"
+            )
         head = f"Probably recorded at {vname}" + (f", around {when}" if when else "") + " (weak room stamp)."
         if es:
             head += f" {es}."
@@ -882,7 +904,7 @@ def _proof(sl: SessionLog | None, doc: dict, clip: Clip) -> dict:
          "feed_wav_sha256": _sha256_file(sl.feed_path)[0] if sl and sl.feed_path else None,
          "clip_sha256": clip.sha256, "normalized_pcm_sha256": clip.pcm_sha256,
          "normalized_format": "float32le mono 48000 Hz", "matched_t_range": None, "drand_rounds": [],
-         "anchors": [], "merkle": None}
+         "anchored_fraction": None, "anchors": [], "merkle": None}
     v = doc["verdict"]
     src = v.get("recorded_at_source")
     cand_keys = ([src] if src in ("l1", "l2", "wt") else []) + [k for k in ("l1", "l2", "wt") if k != src]
@@ -907,6 +929,9 @@ def _proof(sl: SessionLog | None, doc: dict, clip: Clip) -> dict:
                              "randomness": s.get("randomness"), "anchor": s.get("anchor"),
                              "dac_utc": s.get("dac_utc")} for s in secs]
             d["drand_rounds"] = sorted({s["round"] for s in secs if s.get("round") is not None and s.get("anchored")})
+            d["anchored_fraction"] = round(sl.session().anchored_fraction(a, b - 1), 4)
+    elif sl and sl.secs:
+        d["anchored_fraction"] = round(sl.session().anchored_fraction(sl.t_start, max(sl.t_start, sl.t_end - 1)), 4)
     return d
 
 

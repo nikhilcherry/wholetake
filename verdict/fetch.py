@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import urllib.parse
+import urllib.request
 import wave
 from pathlib import Path
 
@@ -249,7 +250,6 @@ def fetch(url_or_path: str) -> dict:
             raw_files = [p for p in cache_dir.glob("raw.*") if not p.name.endswith(".part")]
         else:
             # Direct HTTP media download fallback when yt-dlp is not installed (e.g. local simx / direct mp4/wav)
-            import urllib.request
             ext = Path(parsed.path).suffix or ".mp4"
             dl_path = cache_dir / f"raw{ext}"
             try:
