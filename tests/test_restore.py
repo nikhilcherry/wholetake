@@ -357,3 +357,13 @@ def test_service_restored_and_context_routes_range_and_404(tmp_path: Path, monke
         srv.shutdown()
         srv.server_close()
         mgr.close()
+
+
+def test_detector_words_trim_loose_whisper_edges():
+    from verdict.restore import select_span_word_indices
+    # "rent" starts 10 ms before a 10 ms-precise S4 cut ends, so timing alone pulls it in
+    wl = [{"w": "roof,", "s": 9.30, "e": 9.60}, {"w": "my", "s": 9.60, "e": 9.95}, {"w": "rent", "s": 9.98, "e": 10.30}]
+    assert [wl[i]["w"] for i in select_span_word_indices(wl, 9.01, 10.01)] == ["roof,", "my", "rent"]
+    assert [wl[i]["w"] for i in select_span_word_indices(wl, 9.01, 10.01, "the roof my")] == ["roof,", "my"]
+    # a detector word list that matches nothing never empties the span
+    assert len(select_span_word_indices(wl, 9.01, 10.01, "zebra")) == 3

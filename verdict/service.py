@@ -92,6 +92,21 @@ def run_pipeline(
     return compose_verdict(clip_info, detection, label, proofs, wroot)
 
 
+def detector_identity() -> str:
+    """Which detector a cached result came from: the $WT_DETECT command plus the repo commit.
+
+    The cache keys on the clip and the witness heads; without this, upgrading the detector (text-only ->
+    S4 + Roomstamp) would keep serving the old verdicts for every clip seen before."""
+    cmd = os.environ.get("WT_DETECT") or "verdict.wt_adapter"
+    try:
+        import subprocess
+        rev = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        rev = ""
+    return f"{cmd}@{rev or 'unknown'}"
+
+
 class VerdictManager:
     """Single-worker queue with persistent job state under `verdicts_dir` and clip+heads caching."""
 
@@ -109,6 +124,7 @@ class VerdictManager:
         self.verdicts_dir.mkdir(parents=True, exist_ok=True)
         self.fetch_fn = fetch_fn
         self.detect_fn = detect_fn
+        self.detector_id = detector_identity()
         self.label_fn = label_fn
 
         self._lock = threading.Lock()
@@ -155,6 +171,7 @@ class VerdictManager:
                     job.get("status") == "done"
                     and job.get("clip_sha256") == clip_sha256
                     and job.get("witness_heads") == heads
+                    and job.get("detector_id") == self.detector_id
                     and isinstance(job.get("result"), dict)
                 ):
                     return job["result"]
@@ -306,6 +323,7 @@ class VerdictManager:
                     clip_sha256=clip_info["sha256"],
                     clip_wav=str(clip_info.get("wav") or ""),
                     witness_heads=heads,
+                    detector_id=self.detector_id,
                     result=cached,
                     error=None,
                 )
@@ -334,6 +352,7 @@ class VerdictManager:
                 clip_sha256=clip_info["sha256"],
                 clip_wav=str(clip_info.get("wav") or ""),
                 witness_heads=heads,
+                detector_id=self.detector_id,
                 result=verdict,
                 error=None,
             )

@@ -204,7 +204,7 @@ def run_detector(
     if raw_cmd:
         base_argv = shlex.split(raw_cmd)
     else:
-        base_argv = [sys.executable, "-m", "verdict.ref_detect"]
+        base_argv = [sys.executable, "-m", "verdict.wt_adapter"]
 
     def _invoke(target_out: Path) -> dict:
         argv = [*base_argv, str(wav_p), "--witness-root", str(wroot), "--out", str(target_out)]

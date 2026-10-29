@@ -4,7 +4,7 @@ This contract defines the interface between the **verdict service** (`verdict/`,
 
 ## 1. Invocation & Isolation Rules
 
-The verdict service invokes the detector via `$WT_DETECT` (default `./py -m verdict.ref_detect`):
+The verdict service invokes the detector via `$WT_DETECT` (default `./py -m verdict.wt_adapter`, which runs the text aligner, then the S4 acoustic matcher and Roomstamp from `roomstamp/` — see docs/DETECTION_JSON.md; `verdict.ref_detect` alone is the text-only fallback):
 
 ```bash
 $WT_DETECT <clip.wav> --witness-root <root> --out <detection.json>

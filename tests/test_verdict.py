@@ -554,10 +554,29 @@ def test_service_end_to_end_ssrf_cache_and_restart(tmp_path: Path, monkeypatch):
         # Detector was NOT invoked a second time because clip_sha256 + witness_heads matched!
         assert detect_calls == 1
 
+        # 3b. A detector upgrade (new $WT_DETECT or commit) must not be served the old detector's verdict
+        mgr.detector_id = "upgraded-detector@test"
+        req_up = urllib.request.Request(
+            f"{base_url}/api/verdict",
+            data=json.dumps({"url": "https://example.com/clip3"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req_up) as resp:
+            jid3 = json.loads(resp.read().decode("utf-8"))["id"]
+        for _ in range(50):
+            with urllib.request.urlopen(f"{base_url}/api/verdict/{jid3}") as resp:
+                j3 = json.loads(resp.read().decode("utf-8"))
+                if j3["status"] in ("done", "error"):
+                    break
+            time.sleep(0.05)
+        assert j3["status"] == "done"
+        assert detect_calls == 2
+
         # 4. List verdicts endpoint
         with urllib.request.urlopen(f"{base_url}/api/verdicts?limit=5") as resp:
             listing = json.loads(resp.read().decode("utf-8"))
-            assert len(listing["verdicts"]) == 2
+            assert len(listing["verdicts"]) == 3  # resumed + cached + post-upgrade
     finally:
         httpd.shutdown()
         httpd.server_close()

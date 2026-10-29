@@ -1,5 +1,6 @@
 """Reconstruct excised broadcast audio ("Hear what they cut") and before/after witness context."""
 import io
+import re
 import json
 import wave
 from pathlib import Path
@@ -59,8 +60,12 @@ def _chunk_gap_path(witness_root: Path, stream: str, seq: int) -> Path:
     return witness_root / stream / f"{seq:06d}.gap.json"
 
 
-def select_span_word_indices(wlist: list[dict], s0: float, s1: float) -> list[int]:
-    """Select transcript word indices overlapping [s0, s1] with shared boundary tolerance."""
+def select_span_word_indices(wlist: list[dict], s0: float, s1: float, expect: str | None = None) -> list[int]:
+    """Select transcript word indices overlapping [s0, s1] with shared boundary tolerance.
+
+    `expect` is the detector's own removed words. Whisper word edges are loose by tens of ms, so a word that
+    merely touches a 10 ms-precise cut (S4) can sneak in; edge words the detector didn't list are dropped, unless
+    that would leave nothing (then the timing overlap stands)."""
     hits = [
         i
         for i, w in enumerate(wlist)
@@ -78,7 +83,20 @@ def select_span_word_indices(wlist: list[dict], s0: float, s1: float) -> list[in
             and float(w.get("e", 0.0)) >= s0 - 0.02
             and float(w.get("s", 0.0)) <= s1 + 0.02
         ]
+    want = {_norm_tok(t) for t in (expect or "").split()} - {""}
+    if want and hits:
+        trimmed = list(hits)
+        while trimmed and _norm_tok(str(wlist[trimmed[0]].get("w") or "")) not in want:
+            trimmed.pop(0)
+        while trimmed and _norm_tok(str(wlist[trimmed[-1]].get("w") or "")) not in want:
+            trimmed.pop()
+        if trimmed:
+            hits = trimmed
     return hits
+
+
+def _norm_tok(w: str) -> str:
+    return re.sub(r"[^\w']+", "", w.lower()).strip("'")
 
 
 def _normalize_retimed_words(words: list[dict], seg_t0: float, seg_t1: float) -> list[dict]:
@@ -117,6 +135,7 @@ def _extract_witness_span(
     s0: float,
     s1: float,
     expected_params: tuple[int, int, int],
+    expect: str | None = None,
 ) -> tuple[bytes, list[dict]]:
     """Read PCM frames and transcript words for [s0, s1] relative to `start_seq`, crossing into seq+1 if needed."""
     ch, sw, sr = expected_params
@@ -160,7 +179,7 @@ def _extract_witness_span(
         seg_local_s1 = end_frame / sr
         tx = _load_json(_chunk_json_path(witness_root, stream, cur_seq)) or {}
         wlist = tx.get("words") or []
-        hits = select_span_word_indices(wlist, seg_local_s0, seg_local_s1)
+        hits = select_span_word_indices(wlist, seg_local_s0, seg_local_s1, expect)
         for i in hits:
             w = wlist[i]
             ws = float(w.get("s", 0.0))
@@ -286,7 +305,7 @@ def build_restored(
             out_frames += silence_frames
 
         # 3. Excised witness audio
-        excised_pcm, rel_words = _extract_witness_span(wroot, stream, seq, s0, s1, (ch, sw, sr))
+        excised_pcm, rel_words = _extract_witness_span(wroot, stream, seq, s0, s1, (ch, sw, sr), rem.get("words"))
         excised_frames = len(excised_pcm) // frame_bytes
         t0 = out_frames / sr
         t1 = (out_frames + excised_frames) / sr
@@ -417,7 +436,7 @@ def preview_restored_manifest(
             )
             out_frames += silence_frames
 
-        excised_pcm, rel_words = _extract_witness_span(wroot, stream, seq, s0, s1, (1, 2, sr))
+        excised_pcm, rel_words = _extract_witness_span(wroot, stream, seq, s0, s1, (1, 2, sr), rem.get("words"))
         excised_frames = len(excised_pcm) // 2
         t0 = out_frames / sr
         t1 = (out_frames + excised_frames) / sr

@@ -109,7 +109,7 @@ def _load_sentence_highlight(
         wlist = tx.get("words") or []
         if wlist:
             try:
-                hits = select_span_word_indices(wlist, s0, s1)
+                hits = select_span_word_indices(wlist, s0, s1, words_removed)
                 if hits:
                     lo = max(0, hits[0] - 8)
                     hi = min(len(wlist), hits[-1] + 1 + 8)
