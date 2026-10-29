@@ -333,12 +333,16 @@ def _subframe_off(Fc, Fw, piece: Piece, lo: int, hi: int) -> float:
     lo, hi = max(lo, 0), min(hi, len(Fc))
     mid = (lo + hi) / 2
     base = int(round(piece.off(mid)))
+    if lo >= hi:
+        return float(base)
     k = np.arange(lo, hi)
     vals = []
     for o in range(base - 2, base + 3):
         j = k + o
         ok = (j >= 0) & (j < len(Fw))
         vals.append(float(np.einsum("ij,ij->", Fc[k[ok]], Fw[j[ok]])) if ok.any() else -1e9)
+    if max(vals) <= 0.0:
+        return float(base)
     i = int(np.argmax(vals))
     if 0 < i < 4:
         a, b, c = vals[i - 1], vals[i], vals[i + 1]
