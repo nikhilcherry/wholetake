@@ -159,9 +159,18 @@ def cmd_detect(a) -> None:
     feed = wavio.read(a.feed or os.path.join(os.path.dirname(a.log), header["feed_wav"]))
     p = StampParams(**header["params"])
     t0, ref_rms, gain = header["t_start"], None, None
+    if a.dur is None or not np.isfinite(a.dur) or a.dur < 1:
+        raise SystemExit(f"--dur must be >= 1 second (got {a.dur})")
     if a.start is not None:   # a section of a long session: feed seconds [start, start+dur)
+        if not np.isfinite(a.start) or a.start < 0:
+            raise SystemExit(f"--start must be >= 0 (got {a.start})")
         s0 = int(a.start)
-        feed = feed[s0 * FS:(s0 + int(a.dur)) * FS]
+        dur = int(a.dur)
+        if s0 * FS >= len(feed):
+            raise SystemExit(f"--start {a.start}s is out of range for feed ({len(feed) / FS:.1f}s)")
+        feed = feed[s0 * FS:(s0 + dur) * FS]
+        if len(feed) == 0:
+            raise SystemExit("requested feed slice is empty")
         t0 += s0
         first = secs.get(t0, {})
         ref_rms, gain = first.get("ref_rms"), first.get("gain")
