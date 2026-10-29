@@ -95,7 +95,7 @@ class Stamper:
         of this block inside its second. Returns (out, stamp_component, stats)."""
         n = len(x)
         st = BlockStats()
-        x = np.asarray(x, dtype=np.float64)
+        x = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0, posinf=1.0, neginf=-1.0)
         if pos + n > FS:   # never happens with fixed BLOCK; never crash the audio thread
             st.missing = True
             return np.zeros(n, np.float32), np.zeros(n, np.float32), st
