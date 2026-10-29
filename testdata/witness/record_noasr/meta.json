@@ -1,0 +1,13 @@
+{
+ "format": "wholetake-witness-v1",
+ "id": "hh-test-talk",
+ "source": "talk.wav",
+ "source_sha256": "37642b358f77fdc527c9d7d3487ee085e02e9cf419da04f5becafcc3bb3d47af",
+ "duration_s": 226.102,
+ "asr_model": "none",
+ "language": "en",
+ "fps": 100,
+ "n_mels": 40,
+ "n_words": 0,
+ "build_s": 0.4
+}
