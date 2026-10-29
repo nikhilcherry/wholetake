@@ -121,7 +121,9 @@ def _local(seg: np.ndarray, x8: np.ndarray, c8: int, off: int) -> tuple[int, flo
 
 
 def align_windows(y8: np.ndarray, x8: np.ndarray, log=None) -> list[Win]:
-    wins = [Win(c8=c) for c in range(0, max(len(y8) - AWIN, 0) + 1, AHOP)]
+    if len(y8) < AWIN or len(x8) < AWIN:
+        return []
+    wins = [Win(c8=c) for c in range(0, len(y8) - AWIN + 1, AHOP)]
     for w in wins:
         w.rms = float(np.sqrt(np.mean(y8[w.c8:w.c8 + AWIN] ** 2)))
     loud = np.percentile([w.rms for w in wins], 90) if wins else 0.0
@@ -617,6 +619,15 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     if spec.key_id(key) != sess.key_id:
         log(f"[s2] note: key id {spec.key_id(key)} != session key id {sess.key_id}")
     mode = sess.params.mode
+    clip = np.asarray(clip, dtype=np.float64)
+    feed = np.asarray(feed, dtype=np.float64)
+    if clip.ndim != 1 or feed.ndim != 1:
+        raise ValueError("clip and feed must be 1D arrays")
+    if len(clip) < FS // 4 or len(feed) < FS // 4:
+        return {"mode": mode, "key_id": spec.key_id(key), "session_key_id": sess.key_id, "venue": sess.venue,
+                "clip_s": len(clip) / FS, "windows_matched": 0, "windows": 0, "stamp": "absent",
+                "matched": False, "pieces": [], "edits": [], "runtime_s": time.time() - t_run,
+                "verdict": "No part of this clip matches the venue's recording."}
     yb, xb = _band(clip), _band(feed)
     y8, x8 = resample_poly(yb, 1, DEC), resample_poly(xb, 1, DEC)
     mark("prep")
