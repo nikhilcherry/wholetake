@@ -19,8 +19,8 @@ CONTRACTIONS = {
 SUFFIXES = [("n't", ["not"]), ("'re", ["are"]), ("'ve", ["have"]), ("'ll", ["will"]), ("'d", ["would"]),
             ("'m", ["am"]), ("'s", [])]  # 's: possessive or "is"; dropped on both sides
 
-HINGLISH = {"nahin": "nahi", "naheen": "nahi", "nahee": "nahi", "nahiin": "nahi", "nhi": "nahi", "nai": "nahi", "nahi": "nahi", "mt": "mat",
-            "hain": "hai", "hy": "hai", "kya": "kya", "kyaa": "kya", "mai": "main", "mein": "mein", "me": "mein"}
+HINGLISH = {"nahin": "nahi", "naheen": "nahi", "nahee": "nahi", "nahiin": "nahi", "nahan": "nahi", "nhi": "nahi", "nhn": "nahi", "nai": "nahi", "nahi": "nahi", "mt": "mat",
+            "hain": "hai", "hy": "hai", "kya": "kya", "kyaa": "kya", "mai": "main", "mein": "mein", "men": "mein", "me": "mein"}
 
 DECISIVE = {
     "not", "no", "never", "neither", "nor", "none", "nobody", "nothing", "nowhere", "without",
@@ -53,7 +53,7 @@ def romanise(word: str) -> str:
                 i += 1
             elif nxt == _VIRAMA:
                 i += 1
-            elif (nxt in _DEV_CONS or nxt in _DEV_VOW or nxt in _DEV_MAT or nxt.isalnum()) and nxt not in _DEV_NASAL:
+            elif nxt in _DEV_CONS or nxt in _DEV_VOW or nxt in _DEV_MAT or nxt in _DEV_NASAL or nxt.isalnum():
                 out.append("a")  # inherent schwa, dropped at word end
         elif ch in _DEV_VOW:
             out.append(_DEV_VOW[ch])
