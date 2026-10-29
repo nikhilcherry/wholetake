@@ -293,11 +293,21 @@ def load_session_log(path: str, venue_name: str) -> SessionLog:
             line = line.strip()
             if not line:
                 continue
-            r = json.loads(line)
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(r, dict):
+                continue
             if r.get("type") in ("session", "session_start"):
-                header = r
+                if "t_start" in r and "key_id" in r and isinstance(r.get("params"), dict):
+                    header = r
             elif r.get("type") == "sec":
-                secs.append(r)
+                try:
+                    r["t"] = int(r["t"])
+                    secs.append(r)
+                except (KeyError, TypeError, ValueError):
+                    continue
     if header is None:
         raise ValueError(f"{path}: no session header")
     if header.get("spec") not in (None, spec.SPEC_VERSION):
@@ -547,7 +557,14 @@ def run_l2(clip: Clip, sl: SessionLog | None, key: bytes, window: tuple[int, int
     if not os.path.exists(npy):
         np.save(npy, clip.x)
     unanch = sl is not None and not any(s.get("anchored") for s in sl.secs)
-    kw = {"clip_npy": npy, "key": key, "log": sl.path if sl else None, "unanchored": unanch,
+    log_path = None
+    if sl is not None:
+        log_path = os.path.join(work, f"{sl.sid}.jsonl")
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(sl.header) + "\n")
+            for s in sl.secs:
+                f.write(json.dumps(s) + "\n")
+    kw = {"clip_npy": npy, "key": key, "log": log_path, "unanchored": unanch,
           "cache": os.path.join(work, "drand_cache.json"), "t_lo": int(window[0]), "t_hi": int(window[1]),
           "seed": clip.seed, "allow_network": allow_network}
     ctx = mp.get_context("spawn")
@@ -1028,7 +1045,13 @@ def rank_sessions(sessions: list[SessionLog], key_id: str, around: float | None,
     the rest by closeness to --around (or recency)."""
     if session_path:
         sp = os.path.abspath(session_path)
-        cands = [s for s in sessions if s.path == sp] or [load_session_log(sp, DEFAULT_VENUE_NAME)]
+        cands = [s for s in sessions if s.path == sp]
+        if not cands:
+            try:
+                cands = [load_session_log(sp, DEFAULT_VENUE_NAME)]
+            except Exception as e:
+                warnings.append(f"session_log_unreadable: {os.path.basename(sp)}: {e}")
+                return []
         if cands[0].key_id != key_id:
             warnings.append(f"key_mismatch: key {key_id} != session key {cands[0].key_id}; expect 'absent'")
     else:
