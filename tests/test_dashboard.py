@@ -149,3 +149,41 @@ def test_upload_path_traversal_xss_and_stamp_cuts_svg(tmp_path: Path, monkeypatc
     finally:
         httpd.shutdown()
         mgr.close()
+
+
+if __name__ == "__main__":
+    import os
+    import shutil
+    import tempfile
+
+    class _MP:
+        def __init__(self):
+            self._old = {}
+
+        def setenv(self, k: str, v: str):
+            if k not in self._old:
+                self._old[k] = os.environ.get(k)
+            os.environ[k] = v
+
+        def restore(self):
+            for k, v in self._old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    for fn in (
+        test_dashboard_html_and_no_external_cdns,
+        test_api_status_schema_and_no_host_paths,
+        test_upload_path_traversal_xss_and_stamp_cuts_svg,
+    ):
+        td = Path(tempfile.mkdtemp(prefix="wt_dash_"))
+        mp = _MP()
+        try:
+            fn(td, mp)
+            print(f"PASS {fn.__name__}")
+        finally:
+            mp.restore()
+            shutil.rmtree(td, ignore_errors=True)
+    print("SUMMARY: 3 passed, 0 failed, 0 skipped")
+
