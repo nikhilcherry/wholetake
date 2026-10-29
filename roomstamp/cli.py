@@ -26,7 +26,10 @@ from .spec import FS
 
 def load_key(path: str) -> bytes:
     raw = os.environ.get("ROOMSTAMP_KEY") or open(path, encoding="utf-8").read().strip()
-    key = bytes.fromhex(raw)
+    try:
+        key = bytes.fromhex(raw)
+    except ValueError:
+        raise SystemExit("key must be 32 bytes (64 hex chars)") from None
     if len(key) != 32:
         raise SystemExit("key must be 32 bytes (64 hex chars)")
     return key
