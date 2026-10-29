@@ -837,6 +837,8 @@ def fuse(doc: dict) -> dict:
             )
 
     es = _edit_summary(edits)
+    missing = [e["restored_text"] for e in edits if e.get("restored_text")]
+    missing_tail = (" Missing words: " + ", ".join(f'"{m}"' for m in missing) + ".") if missing else ""
     if recorded == "verified":
         if unanchored:
             warns.append(
@@ -852,10 +854,7 @@ def fuse(doc: dict) -> dict:
             head += f" Complete: nothing removed ({clip_s:.1f} s)."
         else:
             head += " Room stamp verified; cuts not checked" + (" yet." if pending else ".")
-        missing = [e["restored_text"] for e in edits if e.get("restored_text")]
-        if missing:
-            quoted = ", ".join(f'"{m}"' for m in missing)
-            head += f" Missing words: {quoted}."
+        head += missing_tail
     elif recorded == "likely":
         if unanchored:
             warns.append(
@@ -865,6 +864,7 @@ def fuse(doc: dict) -> dict:
         head = f"Probably recorded at {vname}" + (f", around {when}" if when else "") + " (weak room stamp)."
         if es:
             head += f" {es}."
+        head += missing_tail
     elif recorded == "not_verified":
         if content:
             head = (f"Words match {vname}" + (f", {when}" if when else "")
@@ -872,6 +872,7 @@ def fuse(doc: dict) -> dict:
                     "in the room (e.g. re-recorded from a stream).")
             if es:
                 head += f" {es}."
+            head += missing_tail
         elif s["l2"] == "too_short" and s["l1"] != "present":
             head = f"No room stamp found, and the clip is too short ({clip_s:.1f} s) for the backup check (needs 8 s)."
         else:
@@ -884,10 +885,7 @@ def fuse(doc: dict) -> dict:
                 head += f" {es}."
             elif integrity == "intact":
                 head += f" Complete: nothing removed ({clip_s:.1f} s)."
-            missing = [e["restored_text"] for e in edits if e.get("restored_text")]
-            if missing:
-                quoted = ", ".join(f'"{m}"' for m in missing)
-                head += f" Missing words: {quoted}."
+            head += missing_tail
         else:
             reason = doc.get("_unknown_reason") or "no layer could run"
             head = f"Couldn't check this clip: {reason}."
