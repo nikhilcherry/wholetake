@@ -1040,9 +1040,13 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         L["l2"] = _stage("skipped", "s3", "L1 already locked (pass --confirm to run L2 too)")
 
     if sl is not None:
-        rec = next((L[k]["recorded_at_unix"] for k in ("l1", "l2") if L[k].get("recorded_at_unix") is not None), None)
-        if rec is not None:
-            doc["_wall_offset"] = sl.wall(rec) - rec
+        for k in ("l1", "l2", "wt"):
+            st = L.get(k) or {}
+            ok = st.get("status") in ("present", "likely", "inconclusive") or (k != "l2" and st.get("content_match"))
+            if ok and st.get("recorded_at_unix") is not None:
+                rec = st["recorded_at_unix"]
+                doc["_wall_offset"] = sl.wall(rec) - rec
+                break
     fuse(doc)
     if sl is not None:
         doc["proof"] = _proof(sl, doc, clip)
