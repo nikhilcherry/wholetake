@@ -70,12 +70,22 @@ WARMUP_S = 10
 
 
 _DITHER = np.random.default_rng(0).standard_normal(FS) * 1e-9  # -180 dBFS, fixed
+_DITHER_0 = sosfilt(SOS_L1, _DITHER)
+_DITHER_SS = sosfilt(SOS_L1, np.tile(_DITHER, 3))[2 * FS:]
 
 
 def _band(x: np.ndarray) -> np.ndarray:
-    # digital silence drives IIR state into denormals (40x slower); a fixed tiny dither avoids it
-    d = np.resize(_DITHER, len(x))
-    return sosfilt(SOS_L1, x + d)
+    # digital silence drives IIR state into denormals (40x slower); a fixed tiny dither avoids it,
+    # and subtracting the precomputed dither response keeps silent spans from correlating
+    n = len(x)
+    d = np.resize(_DITHER, n)
+    y = sosfilt(SOS_L1, x + d)
+    if n <= FS:
+        return y - _DITHER_0[:n]
+    y = y.copy()
+    y[:FS] -= _DITHER_0
+    y[FS:] -= np.resize(_DITHER_SS, n - FS)
+    return y
 
 
 def _to8k(x: np.ndarray) -> np.ndarray:
@@ -146,8 +156,10 @@ def align_windows(y8: np.ndarray, x8: np.ndarray, log=None) -> list[Win]:
     wins = [Win(c8=c) for c in range(0, len(y8) - AWIN + 1, AHOP)]
     for w in wins:
         w.rms = float(np.sqrt(np.mean(y8[w.c8:w.c8 + AWIN] ** 2)))
+    if float(np.max(np.abs(x8))) < 1e-5:
+        return wins
     loud = np.percentile([w.rms for w in wins], 90) if wins else 0.0
-    voiced = [w.rms >= loud * 10 ** (-30 / 20) for w in wins]
+    voiced = [w.rms >= max(1e-5, loud * 10 ** (-30 / 20)) for w in wins]
     n_glob = max(len(x8) - AWIN, 1)
     psr_glob = np.sqrt(2 * np.log(n_glob)) + PSR_GLOBAL_EXTRA
     cur = None  # running offset c8 - f8
@@ -451,7 +463,9 @@ class Channel:
         Pr = np.convolve(Pr, np.ones(k) / k, mode="same")
         self.W = np.where(self.band, 1.0 / np.sqrt(Pr + 1e-30), 0.0)
         Ry = (np.abs(Y) ** 2).sum(axis=1)
-        self.removed_db = float(10 * np.log10(Ry[self.band].sum() / ((np.abs(R) ** 2).sum(axis=1)[self.band].sum() + 1e-30)))
+        num = float(Ry[self.band].sum())
+        den = float((np.abs(R) ** 2).sum(axis=1)[self.band].sum())
+        self.removed_db = float(10 * np.log10((num + 1e-30) / (den + 1e-30))) if num > 0 else 0.0
         self._R = R
         self._n = len(y)
 
@@ -577,7 +591,9 @@ def _span_cancel_db(clip, rend, span: "Piece", ch: Channel, model: "Piece") -> f
     pred = ch.predict(v)[pad:pad + c1 - c0]
     y = _band(clip[c0:c1])
     r = _band(clip[c0:c1] - pred)
-    return float(10 * np.log10(np.sum(y * y) / (np.sum(r * r) + 1e-30)))
+    yy = float(np.sum(y * y))
+    rr = float(np.sum(r * r))
+    return float(10 * np.log10((yy + 1e-30) / (rr + 1e-30))) if yy > 0 else 0.0
 
 
 def _absorb_blips(clip, rend, pieces, chans, channel):

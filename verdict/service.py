@@ -17,6 +17,7 @@ from typing import Callable
 
 from ingest.chain import canonical_json, sha256_bytes, utc_now, write_atomic
 from verdict.compose import compose_verdict
+from verdict.dashboard import ALLOWED_UPLOAD_EXTS, MAX_UPLOAD_BYTES, collect_status_telemetry, render_dashboard_page
 from verdict.detect import run_detector
 from verdict.fetch import SSRFError, clips_root, fetch, validate_public_url
 from verdict.label import label_cuts
@@ -177,11 +178,12 @@ class VerdictManager:
                     return job["result"]
         return None
 
-    def submit(self, url: str) -> dict:
+    def submit(self, url: str, allow_local: bool = False) -> dict:
         if not isinstance(url, str) or not url.strip():
             raise ValueError("missing or empty 'url'")
         url = url.strip()
-        validate_public_url(url)
+        if not allow_local:
+            validate_public_url(url)
 
         now = utc_now()
         job_id = sha256_bytes(f"{url}:{now}:{secrets.token_hex(4)}".encode("utf-8"))[:16]
@@ -204,6 +206,8 @@ class VerdictManager:
         return {"id": job_id, "status": job["status"]}
 
     def get_job(self, job_id: str) -> dict | None:
+        if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", job_id):
+            return None
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
@@ -428,6 +432,15 @@ def make_handler(manager: VerdictManager):
         def do_GET(self) -> None:
             parsed = urllib.parse.urlsplit(self.path)
             path = parsed.path.rstrip("/")
+            if path in ("", "/dashboard"):
+                html_doc = render_dashboard_page(manager)
+                self._send_html(200, html_doc)
+                return
+
+            if path == "/api/status":
+                self._send_json(200, collect_status_telemetry(manager), cors=True)
+                return
+
             if path == "/api/verdicts":
                 qs = urllib.parse.parse_qs(parsed.query)
                 try:
@@ -533,7 +546,43 @@ def make_handler(manager: VerdictManager):
 
         def do_POST(self) -> None:
             parsed = urllib.parse.urlsplit(self.path)
-            if parsed.path.rstrip("/") != "/api/verdict":
+            post_path = parsed.path.rstrip("/")
+            if post_path == "/api/verdict/upload":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = 0
+                if length <= 0:
+                    self._send_json(400, {"error": "empty upload body"}, cors=False)
+                    return
+                if length > MAX_UPLOAD_BYTES:
+                    self._send_json(413, {"error": f"upload exceeds {MAX_UPLOAD_BYTES} bytes"}, cors=False)
+                    return
+                raw_name = self.headers.get("X-Filename") or "upload.mp4"
+                base_name = Path(raw_name.replace("\\", "/")).name
+                ext = Path(base_name).suffix.lower()
+                if ext not in ALLOWED_UPLOAD_EXTS:
+                    self._send_json(400, {"error": f"unsupported file extension {ext!r}"}, cors=False)
+                    return
+                safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", Path(base_name).stem)[:48] or "clip"
+                data = self.rfile.read(length)
+                uploads_dir = Path(os.environ.get("WT_UPLOADS_DIR") or (REPO_ROOT / "data" / "uploads"))
+                uploads_dir.mkdir(parents=True, exist_ok=True)
+                sha16 = sha256_bytes(data)[:16]
+                dst_path = (uploads_dir / f"{sha16}_{safe_stem}{ext}").resolve()
+                if not dst_path.is_relative_to(uploads_dir.resolve()):
+                    self._send_json(400, {"error": "invalid upload filename"}, cors=False)
+                    return
+                write_atomic(dst_path, data)
+                try:
+                    res = manager.submit(str(dst_path), allow_local=True)
+                except Exception as e:
+                    self._send_json(400, {"error": str(e)}, cors=False)
+                    return
+                self._send_json(202, res, cors=False)
+                return
+
+            if post_path != "/api/verdict":
                 self._send_json(404, {"error": "not found"}, cors=False)
                 return
 
@@ -549,6 +598,21 @@ def make_handler(manager: VerdictManager):
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
             except Exception:
                 self._send_json(400, {"error": "invalid JSON body"}, cors=False)
+                return
+
+            if isinstance(body, dict) and isinstance(body.get("preset"), str) and body["preset"].strip():
+                demo_dir = Path(os.environ.get("WT_DEMO_CLIPS_DIR") or (REPO_ROOT / "data" / "demo_clips")).resolve()
+                preset_name = Path(body["preset"].replace("\\", "/")).name
+                cand = (demo_dir / preset_name).resolve()
+                if not cand.is_relative_to(demo_dir) or not cand.is_file():
+                    self._send_json(404, {"error": f"demo preset not found: {preset_name}"}, cors=False)
+                    return
+                try:
+                    res = manager.submit(str(cand), allow_local=True)
+                except Exception as e:
+                    self._send_json(400, {"error": str(e)}, cors=False)
+                    return
+                self._send_json(202, res, cors=False)
                 return
 
             if not isinstance(body, dict) or not isinstance(body.get("url"), str):
