@@ -709,9 +709,10 @@ def fuse(doc: dict) -> dict:
         if es:
             head += f" {es}."
     elif recorded == "not_verified":
-        if content and when:
-            head = (f"Words match {vname}, {when}, but the room stamp is missing: this audio wasn't recorded "
-                    f"in the room (e.g. re-recorded from a stream).")
+        if content:
+            head = (f"Words match {vname}" + (f", {when}" if when else "")
+                    + ", but the room stamp is missing: this audio wasn't recorded "
+                    "in the room (e.g. re-recorded from a stream).")
             if es:
                 head += f" {es}."
         elif s["l2"] == "too_short" and s["l1"] != "present":
