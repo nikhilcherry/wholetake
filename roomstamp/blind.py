@@ -376,11 +376,12 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
     T = template(signs_for(key, t_lo, t_hi, r["rand"]))
     loc = locate(r["scan"], v.F, T)
     start = t_lo + loc["lag"] / HPS
+    s_cs = round(start, 2)
     res = {
         "verdict": verdict, "present": verdict == "present", "layer": "envelope (L2), blind",
         "recording_start_unix": round(start, 3),
-        "recording_start_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(start)))
-        + f".{min(99, int(round((start % 1) * 100))):02d}Z",
+        "recording_start_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(s_cs)))
+        + f".{int(round((s_cs % 1) * 100)):02d}Z",
         "venue_span_s": round(len(v.F) / HPS, 1), "clip_s": round(dur, 1), "tempo": v.tempo,
         "reverb_tau_ms": v.tau * 10, "z": round(r["score"], 2), "sigma_over_null": round(float(sigma), 2),
         "beats": f"{beats}/{len(null)}", "p_value": float(f"{p:.2g}"),
