@@ -42,12 +42,28 @@ def wt_stage(clip_x48k: np.ndarray, witness_path: str) -> dict:
     pieces = r["pieces"]
     edits = []
     for g in r["gaps"]:
-        edits.append({"kind": KIND.get(g["type"], g["type"]), "clip_t": g["clip_at_s"],
-                      "clip_t_range": [g["clip_at_s"], g["clip_at_s"]], "removed_s": g["removed_s"],
-                      "restored_text": g.get("restored_text", ""), "precision_s": 0.01})
+        kind = KIND.get(g["type"], g["type"])
+        c0 = g["clip_at_s"]
+        dur = g.get("duration_s")
+        c1 = g.get("clip_end_s", c0 + dur if (dur and kind in ("replacement", "insertion")) else c0)
+        if dur is None and c1 > c0:
+            dur = round(c1 - c0, 3)
+        ed = {"kind": kind, "clip_t": c0,
+              "clip_t_range": [c0, g.get("clip_end_s", c0)], "removed_s": g.get("removed_s"),
+              "restored_text": g.get("restored_text", ""), "precision_s": 0.01}
+        if dur is not None:
+            ed["duration_s"] = round(float(dur), 3)
+        if g.get("source_offset_s") is not None:
+            ed["source_offset_s"] = round(float(g["source_offset_s"]), 3)
+        edits.append(ed)
     for f in r["foreign_insertions"]:
-        edits.append({"kind": "foreign", "clip_t": f["clip_start_s"],
-                      "clip_t_range": [f["clip_start_s"], f["clip_end_s"]], "removed_s": 0.0,
+        c0, c1 = f["clip_start_s"], f["clip_end_s"]
+        dur = f.get("duration_s")
+        if dur is None:
+            dur = c1 - c0
+        edits.append({"kind": "foreign", "clip_t": c0,
+                      "clip_t_range": [c0, c1], "removed_s": 0.0,
+                      "duration_s": round(float(dur), 3),
                       "restored_text": "", "precision_s": 0.2})
     edits.sort(key=lambda e: e["clip_t"])
 

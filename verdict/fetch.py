@@ -169,8 +169,9 @@ def fetch(url_or_path: str) -> dict:
     if not s:
         raise FetchError("empty url_or_path")
 
+    is_win_drive = len(s) >= 3 and s[0].isalpha() and s[1] == ":" and s[2] in ("\\", "/")
     parsed = urllib.parse.urlsplit(s)
-    if parsed.scheme and parsed.scheme not in ("http", "https"):
+    if not is_win_drive and parsed.scheme and parsed.scheme not in ("http", "https"):
         raise SSRFError(f"unsupported URL scheme {parsed.scheme!r}")
 
     cache_key = hashlib.sha256(s.encode("utf-8")).hexdigest()

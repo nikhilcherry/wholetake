@@ -103,6 +103,18 @@ def test_api_status_schema_and_no_host_paths(tmp_path: Path, monkeypatch):
             assert key in st
         assert st["demo_clips"] == [{"preset": "cut_sample.mp4", "label": "Cut Clip (-0.30s 'not' removed)", "size_bytes": 12}]
         assert str(tmp_path) not in json.dumps(st["demo_clips"])
+
+        # Also test POST /api/verdict with {"preset": "cut_sample.mp4"}
+        req = urllib.request.Request(
+            f"{base}/api/verdict",
+            data=json.dumps({"preset": "cut_sample.mp4"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as r2:
+            assert r2.status == 202
+            pjob = json.loads(r2.read().decode("utf-8"))
+            assert "id" in pjob
     finally:
         httpd.shutdown()
         mgr.close()

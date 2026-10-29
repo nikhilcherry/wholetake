@@ -866,22 +866,39 @@ def render_dashboard_page(manager) -> str:
   const dropZone = document.getElementById('dropZone');
   const banner = document.getElementById('statusBanner');
 
-  function showStatus(msg) {{
+  function showStatus(msg, isError) {{
     banner.style.display = 'block';
+    banner.style.borderColor = isError ? 'var(--cut)' : 'var(--roomstamp)';
+    banner.style.background = isError ? 'rgba(244, 63, 94, 0.18)' : 'rgba(56, 189, 248, 0.14)';
     banner.textContent = msg;
   }}
 
+  const params = new URLSearchParams(window.location.search);
+  const hlId = params.get('highlight');
+  if (hlId) {{
+    const card = document.querySelector('[data-job-id="' + hlId.replace(/[^a-zA-Z0-9_-]/g, '') + '"]');
+    if (card) {{
+      card.style.borderColor = 'var(--roomstamp)';
+      card.style.boxShadow = '0 0 0 2px rgba(56, 189, 248, 0.45)';
+      showStatus('Verdict ready for job ' + hlId + ' (highlighted below).', false);
+    }}
+  }}
+
   async function pollJobUntilDone(jobId) {{
-    showStatus('Job ' + jobId + ' queued — running acoustic & Roomstamp detector...');
+    showStatus('Job ' + jobId + ' queued — running acoustic & Roomstamp detector...', false);
     for (let i = 0; i < 180; i++) {{
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 800));
       try {{
         const res = await fetch('/api/verdict/' + encodeURIComponent(jobId));
         if (!res.ok) continue;
         const job = await res.json();
-        showStatus('Job ' + jobId + ' status: ' + String(job.status || '').toUpperCase());
-        if (job.status === 'done' || job.status === 'error') {{
-          window.location.reload();
+        showStatus('Job ' + jobId + ' status: ' + String(job.status || '').toUpperCase() + '...', false);
+        if (job.status === 'done') {{
+          window.location.href = '/?highlight=' + encodeURIComponent(jobId);
+          return;
+        }}
+        if (job.status === 'error') {{
+          showStatus('Detector error on job ' + jobId + ': ' + (job.error || 'unknown error'), true);
           return;
         }}
       }} catch (_e) {{}}

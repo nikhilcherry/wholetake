@@ -607,11 +607,23 @@ def run_wt(clip: Clip, witness: str | None, warnings: list[str]) -> dict:
     st = _stage(status, "s4", r.get("summary", ""), detail={k: v for k, v in r.items() if k != "match"},
                 recorded_at_unix=rec, venue_t_start=vt0, venue_t_end=vt1,
                 witness_t_range=[r.get("venue_t_start"), r.get("venue_t_end")], wt_verdict=r.get("verdict"))
-    st["edits"] = [{**e, "kind": WT_KIND.get(e.get("kind"), e.get("kind")), "wt_kind": e.get("kind"),
-                    "source": "wt", "precision_s": e.get("precision_s", 0.05),
-                    "restored_text": e.get("restored_text") or None,
-                    "removed_s": e.get("removed_s") if WT_KIND.get(e.get("kind")) in ("removed", "repeated") else None}
-                   for e in r.get("edits", [])]
+    wt_edits = []
+    for e in r.get("edits", []):
+        k = WT_KIND.get(e.get("kind"), e.get("kind"))
+        rng = e.get("clip_t_range") or [e.get("clip_t", 0.0), e.get("clip_t", 0.0)]
+        dur = e.get("duration_s")
+        if dur is None and len(rng) == 2 and rng[1] is not None and rng[0] is not None and rng[1] > rng[0]:
+            dur = round(float(rng[1] - rng[0]), 3)
+        ed = {**e, "kind": k, "wt_kind": e.get("kind"),
+              "source": "wt", "precision_s": e.get("precision_s", 0.05),
+              "restored_text": e.get("restored_text") or None,
+              "removed_s": e.get("removed_s") if k in ("removed", "repeated") else None}
+        if dur is not None or k in ("foreign", "replaced"):
+            ed["duration_s"] = dur
+        if e.get("source_offset_s") is not None or k == "replaced":
+            ed["source_offset_s"] = e.get("source_offset_s")
+        wt_edits.append(ed)
+    st["edits"] = wt_edits
     st["content_match"] = status in ("present", "likely")
     st["integrity_checked"] = st["content_match"]
     st["transcript"] = r.get("transcript")
