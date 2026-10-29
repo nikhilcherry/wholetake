@@ -322,7 +322,7 @@ def locate(scan: dict, F: np.ndarray, T: np.ndarray) -> dict:
     lp = int(np.argmax(scan["pair"]))
     zb = scan["zb"]
     d = int(np.argmax(zb[lp:lp + MAX_CUT + 1]))
-    if d < MIN_CUT or scan["pair"][lp] < zw[lw] + 0.5:
+    if d < MIN_CUT or scan["pair"][lp] < zw[lw] + 0.5 or min(float(scan["za"][lp]), float(zb[lp + d])) < 4.0:
         return out
     # where in the clip: per 0.5 s block, evidence for lag lp vs lp + d; best single split
     blk = HPS // 2
@@ -331,6 +331,8 @@ def locate(scan: dict, F: np.ndarray, T: np.ndarray) -> dict:
     eb = np.array([np.sum(F[i * blk:(i + 1) * blk] * T[lp + d + i * blk:lp + d + (i + 1) * blk]) for i in range(nb)])
     gain = np.concatenate([[0.0], np.cumsum(ea)]) + np.concatenate([np.cumsum(eb[::-1])[::-1], [0.0]])
     k = int(np.argmax(gain))
+    if not (0 < k < nb and gain[k] > max(gain[0], gain[-1])):
+        return out
     out.update(lag=_peak(scan["za"], lp), cut={"removed_venue_s": round(d / HPS, 2), "at_row": k * blk,
                                                  "z_first": round(float(scan["za"][lp]), 2),
                                                  "z_second": round(float(zb[lp + d]), 2)})
