@@ -56,6 +56,7 @@ FEED_SILENT_DBFS = -80.0      # a feed this quiet was never recorded (mic missin
 MAX_SESSION_TRIES = 3         # same speech can match several sessions; only the stamp decides
 SLICE_MARGIN_S = 30           # feed slice margin around the matched span (cuts remove venue time)
 L2_TIMEOUT_S = 150.0
+L2_MAX_WINDOW_S = 2400        # cap blind L2 span (~40 min) to keep FFT memory < 1 GB
 BUDGET_S = float(os.environ.get("WT_BUDGET_S", 270))   # the verdict service kills us at 300 s
 L2_MIN_CLIP_S = 8.0           # S3 refuses shorter clips
 L1_TIME_MISMATCH_S = 1.0
@@ -1015,9 +1016,21 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
             l2_window = (int(c - 30), int(c + clip.duration_s * 1.6 + 30))
         elif sl is not None:
             l2_window = (sl.t_start, sl.t_end)
+            wt = L.get("wt") or {}
             if sl.feed_offset_s is not None and sl.env_z >= ENV_Z_MIN:
                 c = sl.t_start + sl.feed_offset_s
                 l2_window = (int(c - 60), int(c + clip.duration_s * 1.6 + 60))
+            elif wt.get("content_match") and wt.get("recorded_at_unix") is not None:
+                c = wt["recorded_at_unix"]
+                w0, w1 = max(sl.t_start, int(c - 120)), min(sl.t_end, int(c + clip.duration_s * 1.6 + 120))
+                if w0 < w1:
+                    l2_window = (w0, w1)
+            elif t_around is not None:
+                w0, w1 = max(sl.t_start, int(t_around - 1800)), min(sl.t_end, int(t_around + 600))
+                if w0 < w1:
+                    l2_window = (w0, w1)
+            if l2_window[1] - l2_window[0] > L2_MAX_WINDOW_S:
+                l2_window = (l2_window[1] - L2_MAX_WINDOW_S, l2_window[1])
         elif t_around is not None:
             l2_window = (int(t_around - 1800), int(t_around + 600))
         else:
