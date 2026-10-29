@@ -163,3 +163,22 @@ def test_resume_ignores_transcript_json_and_dropped_tail_adjusts_down_since(tmp_
         assert w.down_since >= gap1["to_utc_unix"] - 1.0
     finally:
         w.close()
+
+
+def test_mic_source_uses_pulse_without_realtime_pacing_or_optin(monkeypatch):
+    calls = []
+
+    class FakeProc:
+        stdout = None
+
+        def __init__(self, args, **kw):
+            calls.append(args)
+
+    monkeypatch.setattr(witness.subprocess, "Popen", FakeProc)
+    procs, _, skips = witness.start_source("mic:alsa_input.stage")
+    assert len(procs) == 1 and skips == []
+    args = calls[0]
+    assert args[args.index("-f") + 1] == "pulse" and args[args.index("-i") + 1] == "alsa_input.stage"
+    assert "-re" not in args  # a mic is already real time
+    witness.start_source("mic:")
+    assert calls[1][calls[1].index("-i") + 1] == "default"

@@ -2,6 +2,7 @@
 
     python -m ingest.witness URL --name aljazeera            # runs until Ctrl-C
     python -m ingest.witness some.mp4 --name test --secs 90  # a local file plays at real-time speed (for tests)
+    python -m ingest.witness mic: --name stage --chunk 10    # the room mic (default PipeWire source); mic:<device> picks one
 
 Writes into data/witness/<name>/:
     000000.wav + 000000.meta.json   one chunk (16 kHz mono s16), meta written last
@@ -70,6 +71,12 @@ def start_source(src):
     """Return (procs, pcm_stdout, skip_holder). A local file is played at real time so it behaves like a live stream."""
     to_pcm = ["-vn", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"]
     skip_holder = []
+    if src.startswith("mic:"):
+        # A room mic is already real time, so no -re; "mic:" alone means the default PipeWire/Pulse source.
+        dev = src[4:] or "default"
+        ff = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-f", "pulse", "-i", dev, *to_pcm],
+                              stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        return [ff], ff.stdout, skip_holder
     if Path(src).exists():
         ff = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-re", "-i", src, *to_pcm],
                               stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
@@ -114,7 +121,8 @@ def stop(procs):
 class Witness:
     def __init__(self, src, name, chunk_s, root, optin=True):
         self.src, self.name, self.chunk_s = src, name, chunk_s
-        self.optin = optin and not Path(src).exists()  # local test files have no channel to consent
+        # local test files and our own stage mic have no channel bio to carry a claim code
+        self.optin = optin and not Path(src).exists() and not src.startswith("mic:")
         self.optin_ok_at = None  # monotonic timestamp of when claim code was last seen
         self.revoked = False
         self.fatal = False
