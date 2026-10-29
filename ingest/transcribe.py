@@ -8,7 +8,6 @@ chunk k is transcribed with up to 2s of audio from chunk k-1 and k+1, and only w
 midpoint falls inside chunk k's own span [0, duration_s) are kept.
 """
 import argparse
-import fcntl
 import hashlib
 import io
 import json
@@ -19,6 +18,8 @@ import wave
 from pathlib import Path
 
 import numpy as np
+
+from ingest.chain import fcntl
 
 RATE = 16000
 CONTEXT_S = 2.0

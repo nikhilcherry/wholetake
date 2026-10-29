@@ -77,7 +77,7 @@ def cli(*args, env=None) -> tuple[int, dict | None, float]:
     t = time.time()
     p = subprocess.run([sys.executable, "-m", "roomstamp.wt_detect", *args, "--quiet"], capture_output=True,
                        env={**os.environ, **(env or {})})
-    out = args[args.index("-o") + 1] if "-o" in args else None
+    out = next((args[args.index(fl) + 1] for fl in ("-o", "--out") if fl in args), None)
     doc = json.load(open(out, encoding="utf-8")) if out and os.path.exists(out) else None
     if p.returncode not in (0, 3) or doc is None:
         print(p.stderr.decode(errors="replace")[-3000:])

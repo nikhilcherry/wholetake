@@ -761,7 +761,13 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
                            "offset_samples": p.off(p.c0), "drift_ppm": p.b * 1e6, "align_windows": p.n_win,
                            "align_psr": p.psr, **{f"l1_{k}": v for k, v in p.stamp.items()}})
     statuses = [p.stamp.get("status") for p in pieces]
-    stamp = "present" if "present" in statuses else ("inconclusive" if "inconclusive" in statuses else "absent")
+    scored = [s for s in statuses if s and s != "too short"]
+    if scored and all(s == "present" for s in scored):
+        stamp = "present"
+    elif "present" in scored or "inconclusive" in scored:
+        stamp = "inconclusive"
+    else:
+        stamp = "absent"
     lead = pieces[0].c0 / FS
     tail = (len(clip) - pieces[-1].c1) / FS
     base.update(stamp=stamp, matched=True, pieces=out_pieces, edits=edits, lead_in_s=lead, unmatched_tail_s=tail,
@@ -801,14 +807,26 @@ def _fmt_utc(t: float, tz_h: float = 5.5, tz: str = "IST") -> str:
 def human_verdict(r: dict) -> str:
     if not r.get("matched"):
         return "No part of this clip matches the venue's recording."
-    p0 = r["pieces"][0]
+    pieces = r.get("pieces") or []
+    p0 = pieces[0]
     where = f"{r['venue']}, {_fmt_utc(p0['venue_t_start'])}"
     st = r["stamp"]
+    p_statuses = [p.get("l1_status") for p in pieces]
+    scored = [s for s in p_statuses if s and s != "too short"]
+    if st == "present" and (not scored or not all(s == "present" for s in scored)):
+        st = "inconclusive" if ("present" in scored or "inconclusive" in scored) else "absent"
     head = {"present": f"Recorded at {where}.",
             "inconclusive": f"Matches {where}; room stamp inconclusive.",
             "absent": f"Words match {where}, but the room stamp is missing (not recorded in the room, or the key is wrong)."}[st]
     ed = [e for e in r["edits"] if e["kind"] in ("removed", "repeated")]
     parts = []
+    if "present" in scored and any(s != "present" for s in scored):
+        for i, p in enumerate(pieces):
+            ps = p.get("l1_status")
+            if ps == "absent":
+                parts.append(f"room stamp missing in piece {i + 1} ({_fmt_clock(p['clip_start'])}-{_fmt_clock(p['clip_end'])})")
+            elif ps == "inconclusive":
+                parts.append(f"room stamp inconclusive in piece {i + 1} ({_fmt_clock(p['clip_start'])}-{_fmt_clock(p['clip_end'])})")
     for e in ed:
         if e["kind"] == "removed":
             parts.append(f"{e['removed_s']:.2f} s removed at {_fmt_clock(e['clip_t'])}")

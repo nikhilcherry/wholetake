@@ -3,7 +3,6 @@
     python -m anchor run [--root data/witness] [--every 60]
 """
 import dataclasses
-import fcntl
 import json
 import os
 import signal
@@ -15,7 +14,7 @@ from typing import Any, Callable
 
 from anchor import ots
 from anchor.eas import DEFAULT_CHAIN_ID, EAS_ADDRESS
-from ingest.chain import canonical_json
+from ingest.chain import canonical_json, fcntl
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOCK_PATH = REPO_ROOT / "data" / "anchors" / "anchor.lock"

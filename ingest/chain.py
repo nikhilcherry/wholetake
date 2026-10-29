@@ -10,7 +10,6 @@ minutes later and out of order, and are chained once their corresponding chunk i
 Opt-in checks in <dir>/optin.jsonl are chained incrementally as kind "optin".
 """
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -19,6 +18,28 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    import msvcrt
+
+    class fcntl:  # type: ignore[no-redef]
+        LOCK_EX = 2
+        LOCK_NB = 4
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(fd: int, op: int) -> None:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                if op & fcntl.LOCK_UN:
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError as e:
+                if not (op & fcntl.LOCK_UN):
+                    raise BlockingIOError(str(e)) from e
 
 ZERO_HASH = "0" * 64
 POLL_S = 1.0

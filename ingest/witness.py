@@ -16,7 +16,6 @@ Time claim: received_utc is when the witness held the whole chunk (that is what 
 while streamlink bursts the HLS backlog right after connecting.
 """
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -30,6 +29,8 @@ import time
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
+
+from ingest.chain import fcntl
 
 RATE = 16000
 BYTES_PER_S = RATE * 2
