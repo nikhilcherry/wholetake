@@ -332,13 +332,23 @@ def locate(scan: dict, F: np.ndarray, T: np.ndarray) -> dict:
 def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi: int, n_null: int = 200,
            tempos=TEMPOS, taus=TAUS, seed: int | None = None, pair: bool = True) -> dict:
     t0 = time.time()
+    clip = np.nan_to_num(np.asarray(clip, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    if clip.ndim > 1:
+        clip = clip.mean(axis=-1)
+    n_null = max(2, int(n_null))
     dur = len(clip) / FS
     if dur < MIN_CLIP_S:
         return {"verdict": "too short", "present": False, "clip_s": round(dur, 1),
                 "note": f"blind envelope check needs >= {MIN_CLIP_S:.0f} s (>= 20 s for a confident verdict)"}
-    if t_hi - t_lo < dur * max(tempos) + MIN_PAD_S:
+    if t_lo > t_hi:
+        t_lo, t_hi = t_hi, t_lo
+    need = int(np.ceil(dur * max(tempos) + MIN_PAD_S))
+    if t_hi - t_lo < need:
         pad = int(np.ceil((dur * max(tempos) + MIN_PAD_S - (t_hi - t_lo)) / 2))
-        t_lo, t_hi = t_lo - pad, t_hi + pad
+        t_lo = max(1, t_lo - pad)
+        t_hi = max(t_hi + pad, t_lo + need)
+    elif t_lo < 1:
+        t_lo, t_hi = 1, max(t_hi, 1 + need)
     src.prefetch(t_lo, t_hi)
 
     rng = np.random.default_rng(seed)
@@ -350,7 +360,7 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
         return [Variant(tp, tau, reverb_variant(feats[tp], tau)) for tp in tps for tau in taus]
 
     stage = 1
-    r = _run_stage(key, null_keys, src, t_lo, t_hi, variants([1.0]), pair)
+    r = _run_stage(key, null_keys, src, t_lo, t_hi, variants([tempos[0]]), pair)
     p = gumbel_p(r["score"], r["null"])
     if p > P_PRESENT and len(tempos) > 1:
         r2 = _run_stage(key, null_keys, src, t_lo, t_hi, variants(tempos), pair)
@@ -442,6 +452,8 @@ def main(argv=None) -> None:
                   file=sys.stderr)
     else:
         ap.error("give --log, --around, or --from/--to")
+    if t_lo > t_hi:
+        t_lo, t_hi = t_hi, t_lo
     if t_hi - t_lo > 3600:
         print(f"note: {(t_hi - t_lo) / 3600:.1f} h window; consider --around the upload time (faster, ~+1 sigma stronger)",
               file=sys.stderr)

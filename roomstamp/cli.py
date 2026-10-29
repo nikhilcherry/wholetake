@@ -169,10 +169,10 @@ def cmd_audibility(a) -> None:
     nb = len(x) // blk
     xr = np.sqrt(np.mean(x[:nb * blk].reshape(nb, blk) ** 2, axis=1) + 1e-20)
     dr = np.sqrt(np.mean(d[:nb * blk].reshape(nb, blk) ** 2, axis=1) + 1e-20)
-    speech = 20 * np.log10(np.sqrt(np.mean(x ** 2)))
+    speech = 20 * np.log10(np.sqrt(np.mean(x ** 2) + 1e-20))
     pause = 20 * np.log10(xr) < speech - 30
-    pause_db = 20 * np.log10(np.sqrt(np.mean(dr[pause] ** 2))) if pause.any() else float("nan")
-    talk_db = 20 * np.log10(np.sqrt(np.mean(dr[~pause] ** 2)))
+    pause_db = 20 * np.log10(np.sqrt(np.mean(dr[pause] ** 2) + 1e-20)) if pause.any() else float("nan")
+    talk_db = 20 * np.log10(np.sqrt(np.mean(dr[~pause] ** 2) + 1e-20)) if (~pause).any() else float("nan")
     nf = len(x) // L2_FRAME
 
     def band_e(sig):
@@ -181,12 +181,14 @@ def cmd_audibility(a) -> None:
 
     ex = band_e(x)
     ripple = band_e(out) - ex
-    voiced = ex.max(axis=0) > speech - 25
+    voiced = ex.max(axis=0) > max(speech - 25, -70.0)
     step = np.abs(np.diff(ripple[:, voiced], axis=1))
+    med_rip = float(np.median(np.abs(ripple[:, voiced]))) if voiced.any() else float("nan")
+    p95_step = float(np.percentile(step, 95)) if step.size else float("nan")
     print(f"speech {speech:.1f} dBFS | stamp+wobble residual: talking {talk_db - speech:+.1f} dB re speech, "
           f"pauses {pause_db - speech:+.1f} dB re speech ({pause_db:.1f} dBFS)")
-    print(f"layer-2 band ripple on voiced frames: median |dB| {np.median(np.abs(ripple[:, voiced])):.2f}, "
-          f"frame-to-frame step p95 {np.percentile(step, 95):.2f} dB")
+    print(f"layer-2 band ripple on voiced frames: median |dB| {med_rip:.2f}, "
+          f"frame-to-frame step p95 {p95_step:.2f} dB")
     print("pauses should be below ~-40 dB re speech; the step threshold is unvalidated -- only the human A/B (abtest) decides")
 
 

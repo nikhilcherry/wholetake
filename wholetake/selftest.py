@@ -24,7 +24,7 @@ from .audio import SR
 
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "testdata", "witness")
 TALK, OTHER, INSERT = (os.path.join(HERE, f) for f in ("talk.wav", "other.wav", "insert.wav"))
-REC_DIR = os.path.join(HERE, "record" if asr.MODEL != "none" else "record_noasr")
+REC_DIR = os.path.join(HERE, "record" if asr. model() is not None else "record_noasr")
 
 
 # ---------------------------------------------------------------------------- transforms
@@ -209,11 +209,12 @@ def main(argv=None) -> int:
     ap.add_argument("--only", default="")
     ap.add_argument("-v", action="store_true")
     a = ap.parse_args(argv)
-    if a.rebuild or not os.path.exists(os.path.join(REC_DIR, "meta.json")):
+    rec_dir = REC_DIR if os.path.exists(os.path.join(REC_DIR, "meta.json")) or asr.model() is not None else os.path.join(HERE, "record_noasr")
+    if a.rebuild or not os.path.exists(os.path.join(rec_dir, "meta.json")):
         t = time.time()
-        record.build(TALK, REC_DIR, "hh-test-talk")
-        print(f"built witness record in {time.time() - t:.1f} s -> {REC_DIR}")
-    rec = record.load(REC_DIR)
+        record.build(TALK, rec_dir, "hh-test-talk")
+        print(f"built witness record in {time.time() - t:.1f} s -> {rec_dir}")
+    rec = record.load(rec_dir)
     W = audio.decode(TALK)
     only = {int(s) for s in a.only.split(",") if s}
     passed = total = 0

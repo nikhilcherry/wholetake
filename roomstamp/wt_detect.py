@@ -160,6 +160,8 @@ def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
     except Exception:
         x, sr, codec = _decode_ffmpeg(path)
         decoder = "ffmpeg"
+    if not np.all(np.isfinite(x)):
+        raise ClipError("DECODE_FAILED", "non-finite audio samples")
     warnings: list[str] = []
     ch = x.shape[1]
     m = _downmix(x[:, :2], warnings)
@@ -913,7 +915,8 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         clip = ingest(clip_path, max_duration_s)
     except ClipError as e:
         doc.update(status="error", error={"code": e.code, "message": str(e)})
-        doc["clip"] = {"path": os.path.abspath(clip_path), "sha256": None, "duration_s": 0.0}
+        doc["clip"] = {"path": os.path.abspath(clip_path), "sha256": None, "bytes": None, "duration_s": 0.0,
+                       "orig_rate": None, "orig_channels": None, "codec": None, "decoder": None}
         doc["_unknown_reason"] = str(e)
         fuse(doc)
         return _finish(doc, out_path, t_run)
@@ -1037,9 +1040,13 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         L["l2"] = _stage("skipped", "s3", "L1 already locked (pass --confirm to run L2 too)")
 
     if sl is not None:
-        rec = next((L[k]["recorded_at_unix"] for k in ("l1", "l2") if L[k].get("recorded_at_unix") is not None), None)
-        if rec is not None:
-            doc["_wall_offset"] = sl.wall(rec) - rec
+        for k in ("l1", "l2", "wt"):
+            st = L.get(k) or {}
+            ok = st.get("status") in ("present", "likely", "inconclusive") or (k != "l2" and st.get("content_match"))
+            if ok and st.get("recorded_at_unix") is not None:
+                rec = st["recorded_at_unix"]
+                doc["_wall_offset"] = sl.wall(rec) - rec
+                break
     fuse(doc)
     if sl is not None:
         doc["proof"] = _proof(sl, doc, clip)
@@ -1108,7 +1115,8 @@ def main(argv=None) -> None:
         tb = traceback.format_exc()
         doc = _empty_doc(["wt-detect"] + argv)
         doc.update(status="error", error={"code": "INTERNAL", "message": tb.strip().splitlines()[-1], "trace": tb[-3000:]})
-        doc["clip"] = {"path": os.path.abspath(a.clip), "sha256": None, "duration_s": 0.0}
+        doc["clip"] = {"path": os.path.abspath(a.clip), "sha256": None, "bytes": None, "duration_s": 0.0,
+                       "orig_rate": None, "orig_channels": None, "codec": None, "decoder": None}
         doc["warnings_base"] = []
         doc["_unknown_reason"] = "internal error"
         fuse(doc)
