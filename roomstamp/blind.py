@@ -340,9 +340,15 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
     if dur < MIN_CLIP_S:
         return {"verdict": "too short", "present": False, "clip_s": round(dur, 1),
                 "note": f"blind envelope check needs >= {MIN_CLIP_S:.0f} s (>= 20 s for a confident verdict)"}
-    if t_hi - t_lo < dur * max(tempos) + MIN_PAD_S:
+    if t_lo > t_hi:
+        t_lo, t_hi = t_hi, t_lo
+    need = int(np.ceil(dur * max(tempos) + MIN_PAD_S))
+    if t_hi - t_lo < need:
         pad = int(np.ceil((dur * max(tempos) + MIN_PAD_S - (t_hi - t_lo)) / 2))
-        t_lo, t_hi = t_lo - pad, t_hi + pad
+        t_lo = max(1, t_lo - pad)
+        t_hi = max(t_hi + pad, t_lo + need)
+    elif t_lo < 1:
+        t_lo, t_hi = 1, max(t_hi, 1 + need)
     src.prefetch(t_lo, t_hi)
 
     rng = np.random.default_rng(seed)
@@ -446,6 +452,8 @@ def main(argv=None) -> None:
                   file=sys.stderr)
     else:
         ap.error("give --log, --around, or --from/--to")
+    if t_lo > t_hi:
+        t_lo, t_hi = t_hi, t_lo
     if t_hi - t_lo > 3600:
         print(f"note: {(t_hi - t_lo) / 3600:.1f} h window; consider --around the upload time (faster, ~+1 sigma stronger)",
               file=sys.stderr)
