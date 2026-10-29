@@ -139,21 +139,32 @@ class VerdictManager:
             self._worker.start()
 
     def _job_path(self, job_id: str) -> Path:
-        return self.verdicts_dir / f"{job_id}.json"
+        if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", job_id):
+            raise ValueError(f"invalid job_id: {job_id!r}")
+        vdir = self.verdicts_dir.resolve()
+        p = (self.verdicts_dir / f"{job_id}.json").resolve()
+        if p.parent != vdir:
+            raise ValueError(f"job_id escapes verdicts_dir: {job_id!r}")
+        return p
 
     def _save_job(self, job: dict) -> None:
         write_atomic(self._job_path(job["id"]), (json.dumps(job, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
     def _load_existing_jobs(self) -> None:
         resumable: list[tuple[str, str]] = []
+        vdir = self.verdicts_dir.resolve()
         for p in sorted(self.verdicts_dir.glob("*.json")):
             try:
+                if p.is_symlink() or p.resolve().parent != vdir:
+                    continue
                 job = json.loads(p.read_text())
             except Exception:
                 continue
             if not isinstance(job, dict) or not job.get("id"):
                 continue
             jid = str(job["id"])
+            if not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", jid):
+                continue
             job["id"] = jid
             self._jobs[jid] = job
             if job.get("status") in ("queued", "fetching", "detecting", "labeling"):
@@ -207,16 +218,20 @@ class VerdictManager:
         return {"id": job_id, "status": job["status"]}
 
     def get_job(self, job_id: str) -> dict | None:
-        if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", job_id):
+        try:
+            p = self._job_path(job_id)
+        except ValueError:
             return None
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
-                p = self._job_path(job_id)
-                if p.exists():
+                raw_p = self.verdicts_dir / f"{job_id}.json"
+                if not raw_p.is_symlink() and p.exists() and p.is_file():
                     try:
-                        job = json.loads(p.read_text())
-                        self._jobs[job_id] = job
+                        loaded = json.loads(p.read_text())
+                        if isinstance(loaded, dict):
+                            job = loaded
+                            self._jobs[job_id] = job
                     except Exception:
                         return None
             if job is None:
