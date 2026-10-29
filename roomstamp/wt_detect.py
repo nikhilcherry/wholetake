@@ -785,8 +785,10 @@ def fuse(doc: dict) -> dict:
             head += f" Complete: nothing removed ({clip_s:.1f} s)."
         else:
             head += " Room stamp verified; cuts not checked" + (" yet." if pending else ".")
-        if edits and edits[0].get("restored_text"):
-            head += f' Missing words: "{edits[0]["restored_text"]}".'
+        missing = [e["restored_text"] for e in edits if e.get("restored_text")]
+        if missing:
+            quoted = ", ".join(f'"{m}"' for m in missing)
+            head += f" Missing words: {quoted}."
     elif recorded == "likely":
         if unanchored:
             warns.append(
