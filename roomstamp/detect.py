@@ -88,6 +88,8 @@ def _band_logE(x: np.ndarray, n_frames: int) -> np.ndarray:
 
 def layer2(y: np.ndarray, feed: np.ndarray, signs: np.ndarray, n_null: int = 500) -> dict:
     n_frames = min(len(y), len(feed)) // L2_FRAME
+    if n_frames == 0:
+        return {"frames": 0, "z": 0.0}
     d = _band_logE(y, n_frames) - _band_logE(feed, n_frames)
     k = np.ones(11) / 11   # odd length: centred 1.1 s moving average
     for b in range(L2_NBANDS):
