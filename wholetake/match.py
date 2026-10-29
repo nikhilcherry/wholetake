@@ -243,17 +243,26 @@ def _scan(Fc: np.ndarray, Fw: np.ndarray, regions, win=WIN, hop=HOP, starts=None
 
 
 def _tempo_refine(F, Fw, regions, alpha0: float, text_tempo: bool) -> float:
+    cache: dict[float, float] = {}
+
     def score(a):
-        G = warp(F, a)
+        key = round(float(a), 4)
+        if key in cache:
+            return cache[key]
+        G = warp(F, key)
         if len(G) < 2 * WIN:
+            cache[key] = -1.0
             return -1.0
         st = np.linspace(0, len(G) - 2 * WIN, num=min(10, max(1, len(G) // (2 * WIN)))).astype(int)
         res = [r for _, s, r, _ in _scan(G, Fw, regions, win=2 * WIN, starts=st) if s is not None]
-        return float(np.mean(sorted(res)[len(res) // 2:])) if res else -1.0
+        val = float(np.mean(sorted(res)[len(res) // 2:])) if res else -1.0
+        cache[key] = val
+        return val
 
-    # coarse: around the text guess, plain speed, and the usual editor presets (text can be absent)
+    # coarse: around the text guess, plain speed, and a uniform [0.70, 1.50] grid when text is absent
     coarse = {round(a0 + d, 3) for a0 in {round(alpha0, 3), 1.0} for d in (-0.02, 0.0, 0.02)}
-    coarse |= {0.9, 1.1, 1.2, 1.25, 1.3, 1.4, 1.5} if not text_tempo else set()
+    if not text_tempo:
+        coarse |= {round(float(a), 3) for a in np.arange(0.70, 1.51, 0.04)} | {1.25}
     best_a, best_s = 1.0, -2.0
     for a in sorted(coarse):
         s = score(a)
