@@ -80,6 +80,8 @@ class Emitter:
             if not wav_in:
                 raise SystemExit("--wav-in is required for --mode file")
             self.file_audio = wavio.read(wav_in)
+            if len(self.file_audio) == 0:
+                raise SystemExit("--wav-in file is empty")
             self.loop_wav = loop_wav
             self.file_pos = 0
         os.makedirs(log_dir, exist_ok=True)
@@ -122,7 +124,7 @@ class Emitter:
         if self.p.mode == "file":
             fa = self.file_audio
             x = np.zeros(frames)
-            if self.loop_wav or self.file_pos < len(fa):
+            if len(fa) > 0 and (self.loop_wav or self.file_pos < len(fa)):
                 idx = (self.file_pos + np.arange(frames)) % len(fa) if self.loop_wav else \
                     np.arange(self.file_pos, min(self.file_pos + frames, len(fa)))
                 x[:len(idx)] = fa[idx]
