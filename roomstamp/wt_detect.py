@@ -272,8 +272,16 @@ class SessionLog:
 
     def wall(self, t_nominal: float) -> float:
         """Nominal stream time -> wall clock, using the emitter's per-second DAC timestamps."""
-        d = self.dac_utc(int(np.floor(t_nominal)))
-        return d + (t_nominal - np.floor(t_nominal)) if d is not None else t_nominal
+        t_sec = int(np.floor(t_nominal))
+        d = self.dac_utc(t_sec)
+        if d is not None:
+            return float(d + (t_nominal - t_sec))
+        if self.secs:
+            valid = [s for s in self.secs if s.get("dac_utc") is not None and s.get("t") is not None]
+            if valid:
+                nearest = min(valid, key=lambda s: abs(int(s["t"]) - t_sec))
+                return float(nearest["dac_utc"]) + (t_nominal - float(nearest["t"]))
+        return float(t_nominal)
 
     def session(self, t0_offset_s: int = 0) -> Session:
         """S2's Session for a feed slice starting t0_offset_s into the session. It carries the
