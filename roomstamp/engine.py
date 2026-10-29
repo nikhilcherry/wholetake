@@ -36,10 +36,14 @@ LIMIT_CEIL = 0.98
 class StampParams:
     mode: str = "file"
     l1_db: float = -30.0        # pa/file: layer-1 RMS relative to tracked speech RMS (dB)
-    l1_dbfs: float = -45.0      # table: absolute layer-1 RMS at the output (dBFS)
-    l1_floor: float = 0.1       # gate floor in pauses (0.1 = -20 dB; table default 0.3); 1.0 = no gating
+    l1_dbfs: float = -50.0      # table: absolute layer-1 RMS at the output (dBFS)
+    l1_floor: float | None = None  # gate floor in pauses (0.1 = -20 dB; table default 0.3); 1.0 = no gating
     l2_delta_db: float = 4.0    # layer-2 nominal +-dB per band (pa/file). Overlapping bands deliver ~0.38x: 4 -> ~1.5 dB effective
     voice_gain: float = 1.0     # pa/file: output gain (voice and stamp together)
+
+    def __post_init__(self) -> None:
+        if self.l1_floor is None:
+            self.l1_floor = 0.3 if self.mode == "table" else 0.1
 
     def as_log(self) -> dict:
         return {k: getattr(self, k) for k in ("mode", "l1_db", "l1_dbfs", "l1_floor", "l2_delta_db", "voice_gain")}
