@@ -112,8 +112,22 @@ def _wav_duration_s(wav_path: Path) -> float:
         return round(frames / float(rate), 3)
 
 
+def _find_ffmpeg() -> str:
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    for candidate in (BIN / "ffmpeg", BIN / "ffmpeg.exe"):
+        if candidate.exists():
+            return str(candidate)
+    try:
+        from roomstamp.media import ffmpeg_exe
+        return ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
 def _normalise_to_wav(src_path: Path, dst_wav: Path) -> None:
-    ffmpeg = shutil.which("ffmpeg") or str(BIN / "ffmpeg")
+    ffmpeg = _find_ffmpeg()
     tmp_wav = dst_wav.with_suffix(".tmp.wav")
     cmd = [
         ffmpeg,
@@ -178,55 +192,86 @@ def fetch(url_or_path: str) -> dict:
         for old in cache_dir.glob("raw.*"):
             old.unlink(missing_ok=True)
 
-        ytdlp = str(BIN / "yt-dlp") if (BIN / "yt-dlp").exists() else (shutil.which("yt-dlp") or "yt-dlp")
-        out_tmpl = str(cache_dir / "raw.%(ext)s")
-        cmd = [
-            ytdlp,
-            "-4",
-            "--js-runtimes",
-            "node",
-            "--no-playlist",
-            "--max-filesize",
-            "200M",
-            "--match-filter",
-            f"duration <=? {int(MAX_DURATION_S)}",  # "?": unknown duration passes; the wav is length-checked after conversion
-            "-f",
-            "bestaudio/best",
-            "--print-json",
-            "-o",
-            out_tmpl,
-            s,
-        ]
-        # YouTube bot-walls some connections ("Sign in to confirm you're not a bot") even over IPv4; a cookies
-        # export from a throwaway logged-in browser gets past it. X/other hosts don't need it.
-        cookies = os.environ.get("WT_YTDLP_COOKIES")
-        if cookies and Path(cookies).exists():
-            cmd[1:1] = ["--cookies", cookies]
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=FETCH_TIMEOUT_S)
-        except subprocess.TimeoutExpired as e:
-            raise FetchError(f"yt-dlp timed out after {FETCH_TIMEOUT_S}s") from e
-
-        if res.returncode != 0:
-            err = (res.stderr or "").strip().splitlines()[-1:]
-            raise FetchError(f"yt-dlp failed for {s}: {err}")
+        ytdlp_bin = None
+        for cand in (BIN / "yt-dlp", BIN / "yt-dlp.exe", Path(r"C:\Users\rajsh\yt-dlp\yt-dlp.exe")):
+            if cand.exists():
+                ytdlp_bin = str(cand)
+                break
+        if not ytdlp_bin:
+            ytdlp_bin = shutil.which("yt-dlp")
 
         title = None
-        for line in res.stdout.splitlines():
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                try:
-                    info = json.loads(line)
-                    title = info.get("title")
-                    dur = info.get("duration")
-                    if isinstance(dur, (int, float)) and dur > MAX_DURATION_S:
-                        raise FetchError(f"clip duration {dur}s exceeds limit of {MAX_DURATION_S}s")
-                except FetchError:
-                    raise
-                except Exception:
-                    pass
+        raw_files: list[Path] = []
+        if ytdlp_bin:
+            out_tmpl = str(cache_dir / "raw.%(ext)s")
+            cmd = [
+                ytdlp_bin,
+                "-4",
+                "--js-runtimes",
+                "node",
+                "--no-playlist",
+                "--max-filesize",
+                "200M",
+                "--match-filter",
+                f"duration <=? {int(MAX_DURATION_S)}",  # "?": unknown duration passes; the wav is length-checked after conversion
+                "-f",
+                "bestaudio/best",
+                "--print-json",
+                "-o",
+                out_tmpl,
+                s,
+            ]
+            cookies = os.environ.get("WT_YTDLP_COOKIES")
+            if cookies and Path(cookies).exists():
+                cmd[1:1] = ["--cookies", cookies]
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=FETCH_TIMEOUT_S)
+            except subprocess.TimeoutExpired as e:
+                raise FetchError(f"yt-dlp timed out after {FETCH_TIMEOUT_S}s") from e
 
-        raw_files = [p for p in cache_dir.glob("raw.*") if not p.name.endswith(".part")]
+            if res.returncode != 0:
+                err = (res.stderr or "").strip().splitlines()[-1:]
+                raise FetchError(f"yt-dlp failed for {s}: {err}")
+
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("{") and line.endswith("}"):
+                    try:
+                        info = json.loads(line)
+                        title = info.get("title")
+                        dur = info.get("duration")
+                        if isinstance(dur, (int, float)) and dur > MAX_DURATION_S:
+                            raise FetchError(f"clip duration {dur}s exceeds limit of {MAX_DURATION_S}s")
+                    except FetchError:
+                        raise
+                    except Exception:
+                        pass
+            raw_files = [p for p in cache_dir.glob("raw.*") if not p.name.endswith(".part")]
+        else:
+            # Direct HTTP media download fallback when yt-dlp is not installed (e.g. local simx / direct mp4/wav)
+            import urllib.request
+            ext = Path(parsed.path).suffix or ".mp4"
+            dl_path = cache_dir / f"raw{ext}"
+            try:
+                req = urllib.request.Request(s, headers={"User-Agent": "Wholetake/1.0"})
+                with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp, open(dl_path, "wb") as out_f:
+                    total = 0
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_FILESIZE_BYTES:
+                            raise FetchError(f"downloaded file exceeds {MAX_FILESIZE_BYTES} bytes")
+                        out_f.write(chunk)
+                title = Path(parsed.path).stem or "clip"
+                raw_files = [dl_path]
+            except FetchError:
+                dl_path.unlink(missing_ok=True)
+                raise
+            except Exception as e:
+                dl_path.unlink(missing_ok=True)
+                raise FetchError(f"direct download failed for {s}: {e}") from e
         if not raw_files:
             raise FetchError(f"yt-dlp produced no media file for {s} (may exceed duration or size limits)")
         raw_path = raw_files[0]

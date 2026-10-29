@@ -202,7 +202,7 @@ def run_detector(
 
     raw_cmd = cmd_override or os.environ.get("WT_DETECT")
     if raw_cmd:
-        base_argv = shlex.split(raw_cmd)
+        base_argv = [tok.strip("\"'") for tok in shlex.split(raw_cmd, posix=(os.name != "nt"))]
     else:
         base_argv = [sys.executable, "-m", "verdict.wt_adapter"]
 

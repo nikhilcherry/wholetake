@@ -167,37 +167,78 @@ def _regions(pieces, cw, ww, alpha, clip_s, rec_s) -> list[tuple[int, int]]:
 def _scan(Fc: np.ndarray, Fw: np.ndarray, regions, win=WIN, hop=HOP, starts=None):
     """Best witness start, peak cosine and robust z for each clip window."""
     starts = np.arange(0, max(1, len(Fc) - win + 1), hop) if starts is None else np.asarray(starts, int)
-    starts = starts[starts + win <= len(Fc)]
+    starts = starts[(starts >= 0) & (starts + win <= len(Fc))]
+    if len(starts) == 0:
+        return []
     active = (np.abs(Fc).sum(1) > 0).astype(np.float32)
     n_act = np.array([active[u:u + win].sum() for u in starts])
+    valid_regions = [(r0, r1) for r0, r1 in regions if r1 - r0 - win + 1 > 0]
+    if not valid_regions:
+        return [(int(u), None, 0.0, 0.0) for u in starts]
     # Window score at witness start s = sum_k cos(clip[u+k], wit[s+k]): diagonal sums of the
-    # frame-similarity matrix, accumulated one diagonal offset k at a time for the chosen rows.
-    rows = []
-    for r0, r1 in regions:
-        L = r1 - r0 - win + 1
-        if L <= 0:
-            continue
-        D = Fc @ Fw[r0:r1].T
-        S = np.zeros((len(starts), L), np.float32)
-        for k in range(win):
-            S += D[starts + k, k:k + L]
-        rows.append((r0, S))
+    # frame-similarity matrix, evaluated in bounded batches of windows and witness sub-chunks
+    # so peak memory stays well below 100 MB even on 600 s clips vs 1200 s witness records.
+    as_strided = np.lib.stride_tricks.as_strided
+    BATCH_WINS = 64
+    R_CHUNK = 20000
     out = []
-    for i, u in enumerate(starts):
-        if not rows or n_act[i] < MIN_ACTIVE * win:
-            out.append((int(u), None, 0.0, 0.0))
+    b0 = 0
+    while b0 < len(starts):
+        b1 = b0 + 1
+        while b1 < len(starts) and b1 - b0 < BATCH_WINS and 0 <= starts[b1] - starts[b1 - 1] <= win:
+            b1 += 1
+        b_starts = starts[b0:b1]
+        b_act = n_act[b0:b1]
+        b0 = b1
+        if not np.any(b_act >= MIN_ACTIVE * win):
+            out.extend((int(u), None, 0.0, 0.0) for u in b_starts)
             continue
-        allc = np.concatenate([S[i] for _, S in rows]) / n_act[i]
-        k = int(np.argmax(allc))
-        off = 0
-        for r0_, S in rows:
-            if k < off + S.shape[1]:
-                pos = r0_ + (k - off)
-                break
-            off += S.shape[1]
-        med = np.median(allc)
-        mad = 1.4826 * np.median(np.abs(allc - med)) + 1e-6
-        out.append((int(u), int(pos), float(allc[k]), float((allc[k] - med) / mad)))
+        u0 = int(b_starts[0])
+        u1 = int(b_starts[-1]) + win
+        rel = b_starts - u0
+        B = len(b_starts)
+        Fc_sub = np.ascontiguousarray(Fc[u0:u1], dtype=np.float32)
+        regular = B > 1 and hop > 1 and win % hop == 0 and bool(np.all(np.diff(rel) == hop))
+        q = win // hop if regular else 0
+        rows = []
+        for r0, r1 in valid_regions:
+            L = r1 - r0 - win + 1
+            S = np.empty((B, L), np.float32)
+            for j0 in range(0, L, R_CHUNK):
+                L_sub = min(R_CHUNK, L - j0)
+                sr0 = r0 + j0
+                sr1 = sr0 + L_sub + win - 1
+                D = np.ascontiguousarray(Fc_sub @ Fw[sr0:sr1].T, dtype=np.float32)
+                s0, s1 = D.strides
+                if regular:
+                    R_sub = L_sub + win - 1
+                    V_mini = as_strided(D, shape=(B + q - 1, hop, R_sub - hop + 1),
+                                        strides=(hop * s0, s0 + s1, s1))
+                    W = V_mini.sum(axis=1)
+                    ws0, ws1 = W.strides
+                    V_full = as_strided(W, shape=(B, q, L_sub),
+                                        strides=(ws0, ws0 + hop * ws1, ws1))
+                    S[:, j0:j0 + L_sub] = V_full.sum(axis=1)
+                else:
+                    for i, ur in enumerate(rel):
+                        V = as_strided(D[ur:ur + win], shape=(win, L_sub), strides=(s0 + s1, s1))
+                        S[i, j0:j0 + L_sub] = V.sum(axis=0)
+            rows.append((r0, S))
+        for i, u in enumerate(b_starts):
+            if b_act[i] < MIN_ACTIVE * win:
+                out.append((int(u), None, 0.0, 0.0))
+                continue
+            allc = (rows[0][1][i] if len(rows) == 1 else np.concatenate([S[i] for _, S in rows])) / b_act[i]
+            k = int(np.argmax(allc))
+            off = 0
+            for r0_, S in rows:
+                if k < off + S.shape[1]:
+                    pos = r0_ + (k - off)
+                    break
+                off += S.shape[1]
+            med = np.median(allc)
+            mad = 1.4826 * np.median(np.abs(allc - med)) + 1e-6
+            out.append((int(u), int(pos), float(allc[k]), float((allc[k] - med) / mad)))
     return out
 
 
