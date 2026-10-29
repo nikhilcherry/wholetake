@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import secrets
 import threading
 import urllib.parse
@@ -387,8 +388,26 @@ def make_handler(manager: VerdictManager):
                         self._send_json(404, {"error": "clip.wav not found"}, cors=False)
                         return
                     data = wav_path.read_bytes()
-                    self.send_response(200)
+                    # Chrome only lets <audio> seek ("Hear the cut") when the server honours byte ranges.
+                    m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+                    if m and (m.group(1) or m.group(2)):
+                        n = len(data)
+                        if m.group(1):
+                            start, end = int(m.group(1)), min(int(m.group(2) or n - 1), n - 1)
+                        else:
+                            start, end = max(0, n - int(m.group(2))), n - 1
+                        if start > end or start >= n:
+                            self.send_response(416)
+                            self.send_header("Content-Range", f"bytes */{n}")
+                            self.end_headers()
+                            return
+                        self.send_response(206)
+                        self.send_header("Content-Range", f"bytes {start}-{end}/{n}")
+                        data = data[start : end + 1]
+                    else:
+                        self.send_response(200)
                     self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Accept-Ranges", "bytes")
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
