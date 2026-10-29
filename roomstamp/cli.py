@@ -174,9 +174,13 @@ def cmd_detect(a) -> None:
             raise SystemExit("requested feed slice is empty")
         t0 += s0
         first = secs.get(t0, {})
-        ref_rms, gain = first.get("ref_rms"), first.get("gain")
-        if ref_rms is None:
+        ref_rms = first.get("ref_rms") if isinstance(first, dict) else None
+        gain = first.get("gain") if isinstance(first, dict) else None
+        if ref_rms is None or isinstance(ref_rms, bool) or not isinstance(ref_rms, (int, float)) or not np.isfinite(ref_rms) or ref_rms <= 0:
             print("note: log has no ref_rms for that second; stamp level may be off for the first seconds")
+            ref_rms = None
+        if gain is None or isinstance(gain, bool) or not isinstance(gain, (int, float)) or not np.isfinite(gain) or gain <= 0:
+            gain = None
     rec = wavio.read(a.rec)
     t = time.time()
     r = detect.detect(rec, feed, key, t0, p, log_randomness(secs), ref_rms=ref_rms, gain=gain)

@@ -10,6 +10,7 @@ Modes
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -85,8 +86,30 @@ class Stamper:
         self.l2_on = params.mode != "table" and params.l2_delta_db > 0
         self.env_zi = lfilter_zi([ENV_A], [1.0, -(1.0 - ENV_A)]) * 0.0
         self.band_zi = [np.zeros((s.shape[0], 2)) for s in SOS_L2]
-        self.ref_rms = max(float(ref_rms), 1e-20) if ref_rms is not None else 10.0 ** (REF_INIT_DBFS / 20.0)
-        self.gain = gain if gain is not None else params.voice_gain
+        default_ref = 10.0 ** (REF_INIT_DBFS / 20.0)
+        if ref_rms is not None and not isinstance(ref_rms, bool):
+            try:
+                r = float(ref_rms)
+            except (TypeError, ValueError):
+                r = float("nan")
+            self.ref_rms = max(r, 1e-20) if (math.isfinite(r) and r > 0.0) else default_ref
+        else:
+            self.ref_rms = default_ref
+
+        default_gain = float(params.voice_gain) if (
+            not isinstance(params.voice_gain, bool)
+            and isinstance(params.voice_gain, (int, float, np.floating))
+            and math.isfinite(float(params.voice_gain))
+            and float(params.voice_gain) > 0.0
+        ) else 1.0
+        if gain is not None and not isinstance(gain, bool):
+            try:
+                g = float(gain)
+            except (TypeError, ValueError):
+                g = float("nan")
+            self.gain = g if (math.isfinite(g) and g > 0.0) else default_gain
+        else:
+            self.gain = default_gain
         self.howl_blocks = 0
         self.mute_blocks = 0
 
