@@ -845,12 +845,13 @@ def _restore_audio(doc: dict, sl: SessionLog | None, out_path: str | None) -> No
         a = (e["venue_t_from"] - 1.5 - sl.t_start) * FS
         b = (e["venue_t_to"] + 1.5 - sl.t_start) * FS
         try:
-            x = _read_feed(sl.feed_path, max(0, int(a)), max(0, int(b)))
+            s0 = max(0, int(a))
+            x = _read_feed(sl.feed_path, s0, max(0, int(b)))
             path = f"{stem}_edit{i}.wav"
             pk = np.max(np.abs(x)) + 1e-9
             wavio.write(path, x * min(1.0, 0.9 / pk))
             e["restored_audio"] = os.path.relpath(path, os.path.dirname(os.path.abspath(out_path)))
-            e["restored_audio_venue_t"] = [e["venue_t_from"] - 1.5, e["venue_t_to"] + 1.5]
+            e["restored_audio_venue_t"] = [sl.t_start + s0 / FS, sl.t_start + (s0 + len(x)) / FS]
         except Exception as ex:
             doc["warnings_base"].append(f"restored_audio_failed: {ex}")
 
