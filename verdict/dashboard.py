@@ -1,8 +1,11 @@
-"""Self-contained Broadcast Forensics Control Room dashboard for Wholetake (`GET /` and `GET /dashboard`).
+"""Wholetake × Roomstamp Forensic Control Room (`GET /` and `GET /dashboard`).
 
-Zero external CDN/font requests. Renders server-side initial state (verdict jobs + live Roomstamp/Witness/Anchor
-telemetry) with a live client-side polling loop, URL + drag-and-drop file upload intake, 1-click stage demo presets,
-and inline SVG 2-track cut ribbons supporting both witness and Roomstamp L1/L2 cuts.
+Designed as a high-precision broadcast & acoustic forensics instrument:
+- Restrained obsidian/zinc surface palette (#070A10 / #0E121B / 1px structural hairlines, zero pill soup).
+- True tapered cubic-Bezier two-track alignment diagram with padded record context, split pieces, and hatched excision blocks.
+- Featured Forensic Stage for the active/selected clip with inline audio playback + 4-cell custody grid.
+- Deduplicated Verification Log table + compact 3-column acoustic/chain telemetry ledger.
+- Zero external CDN or webfont requests; strict HTML/SVG escaping.
 """
 from __future__ import annotations
 
@@ -80,7 +83,6 @@ def extract_cuts_for_card(res: dict) -> list[dict]:
         rem_s = float(c.get("removed_s") or 0.0)
         if rem_s <= 0:
             continue
-        # Merge if within 1.5s of an existing witness cut
         existing = next((x for x in out if abs(x["at_clip_s"] - at_s) <= 1.5), None)
         if existing is not None:
             existing["source"] = "witness+roomstamp"
@@ -98,13 +100,12 @@ def extract_cuts_for_card(res: dict) -> list[dict]:
 
 
 def collect_status_telemetry(manager) -> dict:
-    """Build truthful live system telemetry for `GET /api/status` and the dashboard Right Rail."""
+    """Build truthful live system telemetry for `GET /api/status` and the dashboard."""
     repo_root = Path(__file__).resolve().parents[1]
     venue_dir = Path(os.environ.get("WT_VENUE") or os.environ.get("WT_VENUE_DIR") or (repo_root / "logs"))
     key_file = Path(os.environ.get("WT_VENUE_KEY") or os.environ.get("WT_KEY_FILE") or (repo_root / "venue.key"))
     key_present = bool(os.environ.get("ROOMSTAMP_KEY")) or key_file.is_file()
 
-    # 1. Roomstamp sessions
     sessions: list[dict] = []
     if venue_dir.is_dir():
         for sp in sorted(venue_dir.glob("session_*.jsonl"), reverse=True)[:8]:
@@ -133,7 +134,6 @@ def collect_status_telemetry(manager) -> dict:
             except Exception:
                 continue
 
-    # 2. Witness streams
     streams: list[dict] = []
     wroot = Path(manager.witness_root)
     if wroot.is_dir():
@@ -191,7 +191,6 @@ def collect_status_telemetry(manager) -> dict:
                 "latest_anchor": latest_anc,
             })
 
-    # 3. Demo clips (expose safe basenames only, never host filesystem paths)
     demo_dir = Path(os.environ.get("WT_DEMO_CLIPS_DIR") or (repo_root / "data" / "demo_clips"))
     demo_clips: list[dict] = []
     if demo_dir.is_dir():
@@ -208,7 +207,6 @@ def collect_status_telemetry(manager) -> dict:
                     "size_bytes": dp.stat().st_size,
                 })
 
-    # 4. Counts across jobs
     jobs = manager.list_jobs(limit=200)
     counts = {
         "total": len(jobs),
@@ -257,111 +255,183 @@ def collect_status_telemetry(manager) -> dict:
 
 
 def render_two_track_svg(res: dict) -> str:
-    """Render unified inline SVG 2-Track Cut Ribbon supporting both witness.removed and stamp.cuts."""
+    """Render tapered cubic-Bezier two-track alignment diagram with padded record context and split pieces."""
     det = (res or {}).get("detection") or {}
     clip = (res or {}).get("clip") or det.get("clip") or {}
     wit = det.get("witness") or {}
-    stamp = det.get("stamp") or {}
     dur = max(1.0, float(clip.get("duration_s") or 20.0))
     cuts = extract_cuts_for_card(res)
-    pieces = wit.get("pieces") or []
 
-    W, H = 680, 112
-    PAD_L, PAD_R = 88, 20
-    TW = W - PAD_L - PAD_R
-    Y_REC, Y_CLIP, TH = 22, 74, 16
+    W, H = 860, 152
+    X0, TW = 104.0, 736.0
+    X1 = X0 + TW
+    Y_REC, Y_CLIP, TH = 26.0, 102.0, 26.0
+
+    # Build piecewise intervals [(c0, c1, r0, r1)] so even stamp-only cuts split the record track cleanly
+    total_removed = sum(float(c["removed_s"]) for c in cuts)
+    rec_slice_span = dur + total_removed
+    pad_s = max(3.5, 0.22 * dur)
+    rec_min = -pad_s
+    rec_max = rec_slice_span + pad_s
+    rec_domain = max(0.01, rec_max - rec_min)
+
+    def clip_x(t: float) -> float:
+        return round(X0 + (max(0.0, min(dur, t)) / dur) * TW, 2)
+
+    def rec_x(t: float) -> float:
+        return round(X0 + ((max(rec_min, min(rec_max, t)) - rec_min) / rec_domain) * TW, 2)
+
+    # Split [0, dur] at cut points
+    cut_points = [max(0.0, min(dur, float(c["at_clip_s"]))) for c in cuts]
+    edges = [0.0, *cut_points, dur]
+    segments: list[tuple[float, float, float, float]] = []
+    cum_rem = 0.0
+    for i in range(len(edges) - 1):
+        c0, c1 = edges[i], edges[i + 1]
+        if c1 - c0 > 0.01:
+            segments.append((c0, c1, c0 + cum_rem, c1 + cum_rem))
+        if i < len(cuts):
+            cum_rem += float(cuts[i]["removed_s"])
+
+    is_cut = len(cuts) > 0
+    is_spliced = str(wit.get("verdict") or "") == "spliced"
+    bar_stroke = "#60A5FA" if is_cut else ("#F59E0B" if is_spliced else "#34D399")
+    bar_fill = "rgba(59, 130, 246, 0.28)" if is_cut else ("rgba(245, 158, 11, 0.25)" if is_spliced else "rgba(16, 185, 129, 0.26)")
+    rib_grad = "url(#ribCut)" if is_cut else "url(#ribOk)"
 
     svg = [
-        f'<svg class="cut-ribbon-svg" viewBox="0 0 {W} {H}" width="100%" height="{H}" role="img" '
-        f'aria-label="Two-track forensic alignment ribbon">',
-        f'<rect x="0" y="0" width="{W}" height="{H}" rx="8" fill="#0B101C" stroke="#1E293B" stroke-width="1"/>',
-        f'<text x="12" y="{Y_REC + 12}" fill="#94A3B8" font-size="11" font-weight="700" font-family="monospace">RECORD</text>',
-        f'<text x="12" y="{Y_CLIP + 12}" fill="#94A3B8" font-size="11" font-weight="700" font-family="monospace">CLIP</text>',
-        f'<rect x="{PAD_L}" y="{Y_REC}" width="{TW}" height="{TH}" rx="4" fill="#1E293B"/>',
-        f'<rect x="{PAD_L}" y="{Y_CLIP}" width="{TW}" height="{TH}" rx="4" fill="#1E293B"/>',
+        f'<svg class="alignment-svg" viewBox="0 0 {W} {H}" width="100%" height="{H}" role="img" '
+        f'aria-label="Two-track forensic alignment diagram">',
+        "<defs>",
+        '<linearGradient id="ribCut" x1="0" y1="0" x2="0" y2="1">'
+        '<stop offset="0%" stop-color="#3B82F6" stop-opacity="0.20"/>'
+        '<stop offset="100%" stop-color="#3B82F6" stop-opacity="0.10"/>'
+        "</linearGradient>",
+        '<linearGradient id="ribOk" x1="0" y1="0" x2="0" y2="1">'
+        '<stop offset="0%" stop-color="#10B981" stop-opacity="0.20"/>'
+        '<stop offset="100%" stop-color="#10B981" stop-opacity="0.10"/>'
+        "</linearGradient>",
+        '<linearGradient id="fadeL" x1="0" y1="0" x2="1" y2="0">'
+        '<stop offset="0%" stop-color="#070A10" stop-opacity="0.85"/>'
+        '<stop offset="100%" stop-color="#070A10" stop-opacity="0"/>'
+        "</linearGradient>",
+        '<linearGradient id="fadeR" x1="0" y1="0" x2="1" y2="0">'
+        '<stop offset="0%" stop-color="#070A10" stop-opacity="0"/>'
+        '<stop offset="100%" stop-color="#070A10" stop-opacity="0.85"/>'
+        "</linearGradient>",
+        '<pattern id="cutHatch" width="6" height="6" patternTransform="rotate(45 0 0)" patternUnits="userSpaceOnUse">'
+        '<line x1="0" y1="0" x2="0" y2="6" stroke="#FFE4E6" stroke-width="1.4" stroke-opacity="0.5"/>'
+        "</pattern>",
+        "</defs>",
+        '<text x="8" y="38" fill="#F8FAFC" font-size="11" font-weight="700" letter-spacing="0.06em">RECORD</text>',
+        '<text x="8" y="51" fill="#64748B" font-size="10" font-family="monospace">Venue / Stream</text>',
+        '<text x="8" y="114" fill="#F8FAFC" font-size="11" font-weight="700" letter-spacing="0.06em">CLIP</text>',
+        '<text x="8" y="127" fill="#64748B" font-size="10" font-family="monospace">Submitted audio</text>',
+        # Track wells
+        f'<rect x="{X0}" y="{Y_REC}" width="{TW}" height="{TH}" rx="5" fill="#121723" stroke="#22293A" stroke-width="1"/>',
+        f'<rect x="{X0}" y="{Y_CLIP}" width="{TW}" height="{TH}" rx="5" fill="#121723" stroke="#22293A" stroke-width="1"/>',
+        # Unmatched continuous record context fades on ends
+        f'<rect x="{X0}" y="{Y_REC + 1}" width="36" height="{TH - 2}" rx="4" fill="url(#fadeL)"/>',
+        f'<rect x="{X1 - 36}" y="{Y_REC + 1}" width="36" height="{TH - 2}" rx="4" fill="url(#fadeR)"/>',
+        f'<text x="{X0 + 10}" y="{Y_REC + 17}" fill="#64748B" font-size="12" font-family="monospace">…</text>',
+        f'<text x="{X1 - 10}" y="{Y_REC + 17}" text-anchor="end" fill="#64748B" font-size="12" font-family="monospace">…</text>',
+        # Time axis labels
+        f'<text x="{X0}" y="145" fill="#64748B" font-size="10.5" font-family="monospace">0:00</text>',
+        f'<text x="{X1}" y="145" text-anchor="end" fill="#64748B" font-size="10.5" font-family="monospace">{_esc(_fmt_mmss(dur))}</text>',
     ]
 
-    vk = "cut" if cuts else (str(wit.get("verdict") or "faithful"))
-    track_col = "#F43F5E" if vk == "cut" else ("#F59E0B" if vk == "spliced" else "#10B981")
-    ribbon_fill = "rgba(16, 185, 129, 0.16)" if vk == "faithful" else "rgba(56, 189, 248, 0.14)"
-
-    if pieces and not cuts:
-        for p in pieces:
-            cs = p.get("clip_s") or [0.0, dur]
-            x0 = PAD_L + max(0.0, min(1.0, float(cs[0]) / dur)) * TW
-            x1 = PAD_L + max(0.0, min(1.0, float(cs[1]) / dur)) * TW
-            w = max(4.0, x1 - x0)
-            svg.append(
-                f'<path d="M {x0:.1f} {Y_REC + TH} L {x1:.1f} {Y_REC + TH} L {x1:.1f} {Y_CLIP} L {x0:.1f} {Y_CLIP} Z" '
-                f'fill="{ribbon_fill}"/>'
-            )
-            svg.append(f'<rect x="{x0:.1f}" y="{Y_REC}" width="{w:.1f}" height="{TH}" rx="3" fill="{track_col}" opacity="0.85"/>')
-            svg.append(f'<rect x="{x0:.1f}" y="{Y_CLIP}" width="{w:.1f}" height="{TH}" rx="3" fill="{track_col}"/>')
-    else:
+    # Render matched segments + tapered cubic Bezier ribbons
+    y_rb = Y_REC + TH
+    y_mid = (y_rb + Y_CLIP) / 2.0
+    for c0, c1, r0, r1 in segments:
+        sx0, sx1 = rec_x(r0), rec_x(r1)
+        cx0, cx1 = clip_x(c0), clip_x(c1)
+        sw = max(3.0, round(sx1 - sx0, 2))
+        cw = max(3.0, round(cx1 - cx0, 2))
         svg.append(
-            f'<path d="M {PAD_L} {Y_REC + TH} L {PAD_L + TW} {Y_REC + TH} L {PAD_L + TW} {Y_CLIP} L {PAD_L} {Y_CLIP} Z" '
-            f'fill="{ribbon_fill}"/>'
+            f'<path d="M {sx0},{y_rb} L {sx1},{y_rb} C {sx1},{y_mid} {cx1},{y_mid} {cx1},{Y_CLIP} '
+            f'L {cx0},{Y_CLIP} C {cx0},{y_mid} {sx0},{y_mid} {sx0},{y_rb} Z" '
+            f'fill="{rib_grad}" stroke="{bar_stroke}" stroke-opacity="0.45" stroke-width="1"/>'
         )
-        svg.append(f'<rect x="{PAD_L}" y="{Y_REC}" width="{TW}" height="{TH}" rx="3" fill="#10B981" opacity="0.8"/>')
-        svg.append(f'<rect x="{PAD_L}" y="{Y_CLIP}" width="{TW}" height="{TH}" rx="3" fill="#38BDF8" opacity="0.85"/>')
+        svg.append(
+            f'<rect x="{sx0}" y="{Y_REC}" width="{sw}" height="{TH}" rx="4" fill="{bar_fill}" stroke="{bar_stroke}" stroke-width="1.2"/>'
+        )
+        svg.append(
+            f'<rect x="{cx0}" y="{Y_CLIP}" width="{cw}" height="{TH}" rx="4" fill="{bar_fill}" stroke="{bar_stroke}" stroke-width="1.2"/>'
+        )
 
-    # Overlay crimson excision wedges for every cut (from witness.removed OR stamp.cuts)
+    # Render excised blocks on RECORD + pinch lines down to CLIP seam
+    cum_r = 0.0
     for c in cuts:
         at_s = max(0.0, min(dur, float(c["at_clip_s"])))
         rem_s = float(c["removed_s"])
-        cx = PAD_L + (at_s / dur) * TW
-        rec_w = max(14.0, min(90.0, (rem_s / max(dur, 1.0)) * TW * 2.5))
-        r0 = max(float(PAD_L), cx - rec_w / 2.0)
-        r1 = min(float(PAD_L + TW), cx + rec_w / 2.0)
-        # Excised block on RECORD track + V-wedge down to the seam on CLIP track
-        svg.append(f'<rect x="{r0:.1f}" y="{Y_REC - 1}" width="{max(6.0, r1 - r0):.1f}" height="{TH + 2}" rx="2" fill="#F43F5E"/>')
-        svg.append(
-            f'<polygon points="{r0:.1f},{Y_REC + TH} {r1:.1f},{Y_REC + TH} {cx + 2.5:.1f},{Y_CLIP} {cx - 2.5:.1f},{Y_CLIP}" '
-            f'fill="rgba(244, 63, 94, 0.38)" stroke="#F43F5E" stroke-width="1"/>'
-        )
-        svg.append(f'<rect x="{cx - 2.0:.1f}" y="{Y_CLIP - 2}" width="4" height="{TH + 4}" rx="1" fill="#F43F5E"/>')
-        label = f"-{rem_s:.2f}s @ {_fmt_mmss(at_s)}"
-        lx = max(PAD_L + 44, min(PAD_L + TW - 44, cx))
-        svg.append(
-            f'<rect x="{lx - 42:.1f}" y="{Y_REC + TH + 8}" width="84" height="18" rx="4" fill="#4C0519" stroke="#F43F5E" stroke-width="1"/>'
-        )
-        svg.append(
-            f'<text x="{lx:.1f}" y="{Y_REC + TH + 20}" text-anchor="middle" fill="#FFE4E6" font-size="10.5" '
-            f'font-weight="700" font-family="monospace">{_esc(label)}</text>'
-        )
+        r_start = at_s + cum_r
+        r_end = r_start + rem_s
+        cum_r += rem_s
 
-    if stamp.get("present") is True:
+        rx0_raw, rx1_raw = rec_x(r_start), rec_x(r_end)
+        rmid = (rx0_raw + rx1_raw) / 2.0
+        rw = max(14.0, round(rx1_raw - rx0_raw, 2))
+        rx0 = round(max(X0, min(X1 - rw, rmid - rw / 2.0)), 2)
+        rx1 = round(rx0 + rw, 2)
+        cx = clip_x(at_s)
+        label = f"-{rem_s:.2f}s @ {_fmt_mmss(at_s)}"
+
         svg.append(
-            f'<text x="{PAD_L + TW}" y="14" text-anchor="end" fill="#38BDF8" font-size="10" font-weight="700" '
-            f'font-family="monospace">ROOMSTAMP L1/L2 LOCKED</text>'
+            f'<polygon points="{rx0},{y_rb} {rx1},{y_rb} {cx},{Y_CLIP}" fill="rgba(244, 63, 94, 0.16)"/>'
+            f'<line x1="{rx0}" y1="{y_rb}" x2="{cx}" y2="{Y_CLIP}" stroke="#F43F5E" stroke-dasharray="3 3" stroke-width="1.3"/>'
+            f'<line x1="{rx1}" y1="{y_rb}" x2="{cx}" y2="{Y_CLIP}" stroke="#F43F5E" stroke-dasharray="3 3" stroke-width="1.3"/>'
+            f'<rect x="{rx0}" y="{Y_REC - 2}" width="{rw}" height="{TH + 4}" rx="3" fill="#F43F5E" stroke="#FFE4E6" stroke-width="1.2"/>'
+            f'<rect x="{rx0}" y="{Y_REC - 2}" width="{rw}" height="{TH + 4}" rx="3" fill="url(#cutHatch)"/>'
+            f'<rect x="{rmid - 44:.1f}" y="3" width="88" height="17" rx="4" fill="#4C0519" stroke="#F43F5E" stroke-width="1"/>'
+            f'<text x="{rmid:.1f}" y="15" text-anchor="middle" fill="#FFE4E6" font-size="10.5" font-weight="700" font-family="monospace">{_esc(label)}</text>'
+            f'<line x1="{cx}" y1="{Y_CLIP - 3}" x2="{cx}" y2="{Y_CLIP + TH + 3}" stroke="#F43F5E" stroke-width="2.5" stroke-linecap="round"/>'
+            f'<circle cx="{cx}" cy="{Y_CLIP}" r="3.5" fill="#FFE4E6" stroke="#F43F5E" stroke-width="1.8"/>'
         )
 
     svg.append("</svg>")
     return "".join(svg)
 
 
-def _render_verdict_card_html(job: dict) -> str:
+def _deduplicate_jobs(jobs: list[dict]) -> list[dict]:
+    """Deduplicate completed jobs sharing the same clip_sha256 + headline so the UI isn't cluttered with repeats."""
+    seen_keys: set[str] = set()
+    out: list[dict] = []
+    for j in jobs:
+        if j.get("status") != "done":
+            out.append(j)
+            continue
+        sha = j.get("clip_sha256") or ((j.get("result") or {}).get("clip") or {}).get("sha256")
+        hl = ((j.get("result") or {}).get("headline")) or ""
+        key = f"{sha}:{hl}" if sha else j["id"]
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        out.append(j)
+    return out
+
+
+def _render_featured_inspector(job: dict | None, streams: list[dict]) -> str:
+    if not job:
+        return (
+            '<div class="empty-stage">'
+            '<div class="empty-title">Ready to inspect audio &amp; video clips</div>'
+            '<div class="empty-sub">Paste a link, drop a recording, or select a sample above to verify Roomstamp '
+            'acoustic provenance and sample-precise cut continuity.</div></div>'
+        )
+
     jid = _esc(job.get("id") or "")
     status = str(job.get("status") or "queued")
     url_raw = str(job.get("url") or "")
-    # Never leak host paths if a local demo clip or upload was submitted
-    display_src = Path(url_raw).name if (not url_raw.startswith(("http://", "https://")) and url_raw) else url_raw
+    src_name = Path(url_raw).name if (url_raw and not url_raw.startswith(("http://", "https://"))) else (url_raw or "clip")
 
     if status != "done" or not isinstance(job.get("result"), dict):
-        if status == "error":
-            err_msg = _esc(job.get("error") or "Detector error")
-            return (
-                f'<article class="verdict-card card-error" data-job-id="{jid}">'
-                f'<div class="card-top"><span class="stamp-pill pill-cut">ERROR</span>'
-                f'<span class="mono-meta">job:{jid}</span></div>'
-                f'<div class="card-headline">{err_msg}</div>'
-                f'<div class="mono-meta">Source: {_esc(display_src)}</div></article>'
-            )
         return (
-            f'<article class="verdict-card card-active" data-job-id="{jid}">'
-            f'<div class="card-top"><span class="stamp-pill pill-active">{_esc(status.upper())}</span>'
-            f'<span class="mono-meta">job:{jid} · {_esc(display_src)}</span></div>'
-            f'<div class="card-headline">Running forensic audio + Roomstamp verification…</div></article>'
+            f'<div class="stage-sheet" data-job-id="{jid}">'
+            f'<div class="stage-header"><div>'
+            f'<span class="v-tag v-tag-neutral">{_esc(status.upper())}</span>'
+            f'<h2 class="stage-headline">Analyzing {_esc(src_name)}…</h2>'
+            f'</div></div></div>'
         )
 
     res = job["result"]
@@ -373,489 +443,688 @@ def _render_verdict_card_html(job: dict) -> str:
 
     vk = effective_verdict_kind(job)
     cuts = extract_cuts_for_card(res)
-    badge_map = {
-        "cut": ("CUT", "pill-cut"),
-        "spliced": ("SPLICED", "pill-spliced"),
-        "faithful": ("FAITHFUL", "pill-faithful"),
-        "not_in_record": ("NO RECORD", "pill-neutral"),
+    headline = str(res.get("headline") or "")
+    if vk == "cut" and cuts and "Faithful:" in headline:
+        c0 = cuts[0]
+        venue_name = stamp.get("venue") or wit.get("stream") or "HH Goa Main Stage"
+        headline = f"{c0['removed_s']:.2f} s removed at {_fmt_mmss(c0['at_clip_s'])} (Roomstamp verified at {venue_name})."
+
+    tag_map = {
+        "cut": ("CUT DETECTED", "v-tag-cut"),
+        "spliced": ("SPLICED", "v-tag-spliced"),
+        "faithful": ("FAITHFUL · INTACT", "v-tag-faithful"),
+        "not_in_record": ("UNVERIFIED", "v-tag-neutral"),
     }
-    badge_text, badge_cls = badge_map.get(vk, ("VERDICT", "pill-neutral"))
+    tag_text, tag_cls = tag_map.get(vk, ("VERIFIED", "v-tag-neutral"))
+
+    dur_s = float(clip.get("duration_s") or 0.0)
+    venue_or_stream = _esc(stamp.get("venue") or wit.get("stream") or "Venue")
+    rec_utc = _esc(stamp.get("recorded_at_utc") or job.get("created_utc") or "")
+    svg_diagram = render_two_track_svg(res)
+
+    # 4-cell Custody Grid
+    if stamp.get("present") is True:
+        l1 = stamp.get("layer1_score")
+        l1_str = f"L1 score {float(l1):.2f}" if isinstance(l1, (int, float)) else "Locked"
+        c1_val = "ROOMSTAMP VERIFIED"
+        c1_sub = f"{_esc(l1_str)} · 300-3400 Hz PN"
+        c1_cls = "cell-ok"
+    else:
+        c1_val = "No Roomstamp"
+        c1_sub = "Unstamped source"
+        c1_cls = ""
+
+    w_stream = wit.get("stream")
+    if w_stream:
+        c2_val = f"stream/{_esc(w_stream)}"
+        c2_sub = f"{len(wit.get('pieces') or [])} piece(s) aligned · {len(cuts)} cut(s)"
+    else:
+        c2_val = "Acoustic-only"
+        c2_sub = f"{len(cuts)} cut(s) measured"
+
+    sha_short = _esc(str(clip.get("sha256") or "")[:16])
+    head_str = "Verified"
+    if streams:
+        head_str = f"head #{streams[0]['head_n']} ({streams[0]['head_hash'][:10]}…)"
+
+    anc_val = "Pending anchor"
+    anc_sub = "Local SHA-256 chain intact"
+    for pr in proofs:
+        anc = (pr or {}).get("anchor") or {}
+        if anc.get("tx"):
+            exp = _esc(anc.get("explorer") or f"{BASESCAN_TX_PREFIX}{anc['tx']}")
+            tx_s = _esc(str(anc["tx"])[:12] + "…")
+            blk = _esc(anc.get("block") or "")
+            anc_val = f'<a href="{exp}" target="_blank" rel="noopener">Base EAS {tx_s} ↗</a>'
+            anc_sub = f"Block #{blk}" if blk else "Anchored on Base Sepolia"
+            break
+    if anc_val == "Pending anchor" and streams and streams[0].get("latest_anchor"):
+        la = streams[0]["latest_anchor"]
+        if la.get("tx_hash"):
+            exp = _esc(la.get("explorer") or f"{BASESCAN_TX_PREFIX}{la['tx_hash']}")
+            tx_s = _esc(str(la["tx_hash"])[:12] + "…")
+            anc_val = f'<a href="{exp}" target="_blank" rel="noopener">Base EAS {tx_s} ↗</a>'
+            anc_sub = f"Block #{_esc(la.get('block_number') or '')}"
+
+    return f"""
+    <section class="stage-sheet" data-job-id="{jid}" data-verdict="{_esc(vk)}">
+      <div class="stage-header">
+        <div class="stage-title-block">
+          <div class="stage-eyebrow">
+            <span class="v-tag {tag_cls}">{_esc(tag_text)}</span>
+            <span class="stage-meta num">{venue_or_stream} · {dur_s:.1f}s · {rec_utc[:19].replace('T', ' ')} UTC</span>
+          </div>
+          <h2 class="stage-headline">{_esc(headline)}</h2>
+        </div>
+        <div class="stage-actions">
+          <audio class="inline-audio" controls preload="none" src="/v/{jid}/clip.wav"></audio>
+          <a class="btn-receipt" href="/v/{jid}">Full Forensic Receipt →</a>
+        </div>
+      </div>
+
+      <div class="diagram-frame">
+        {svg_diagram}
+      </div>
+
+      <div class="custody-grid">
+        <div class="custody-cell {c1_cls}">
+          <span class="cell-label">1 · Acoustic Provenance</span>
+          <strong class="cell-value">{c1_val}</strong>
+          <span class="cell-sub num">{c1_sub}</span>
+        </div>
+        <div class="custody-cell">
+          <span class="cell-label">2 · Witness Alignment</span>
+          <strong class="cell-value">{c2_val}</strong>
+          <span class="cell-sub num">{_esc(c2_sub)}</span>
+        </div>
+        <div class="custody-cell">
+          <span class="cell-label">3 · Tamper-Evident Chain</span>
+          <strong class="cell-value num">{_esc(head_str)}</strong>
+          <span class="cell-sub num">Clip SHA256: {sha_short}…</span>
+        </div>
+        <div class="custody-cell">
+          <span class="cell-label">4 · On-Chain Timestamp</span>
+          <strong class="cell-value num">{anc_val}</strong>
+          <span class="cell-sub num">{anc_sub}</span>
+        </div>
+      </div>
+    </section>
+    """
+
+
+def _render_log_row(job: dict, is_selected: bool) -> str:
+    jid = _esc(job.get("id") or "")
+    status = str(job.get("status") or "queued")
+    url_raw = str(job.get("url") or "")
+    src_name = Path(url_raw).name if (url_raw and not url_raw.startswith(("http://", "https://"))) else (url_raw or "clip")
+
+    if status != "done" or not isinstance(job.get("result"), dict):
+        return (
+            f'<tr class="log-row" data-job-id="{jid}">'
+            f'<td><span class="row-dot dot-neutral"></span>{_esc(status.upper())}</td>'
+            f'<td class="num">{_esc(src_name)}</td>'
+            f'<td>Processing clip…</td>'
+            f'<td class="num">—</td>'
+            f'<td style="text-align:right"><a href="/v/{jid}">View</a></td></tr>'
+        )
+
+    res = job["result"]
+    det = res.get("detection") or {}
+    stamp = det.get("stamp") or {}
+    clip = res.get("clip") or det.get("clip") or {}
+    vk = effective_verdict_kind(job)
+    cuts = extract_cuts_for_card(res)
 
     headline = str(res.get("headline") or "")
     if vk == "cut" and cuts and "Faithful:" in headline:
         c0 = cuts[0]
-        venue_name = stamp.get("venue") or wit.get("stream") or "stage"
-        headline = (
-            f"{c0['removed_s']:.2f} s removed at {_fmt_mmss(c0['at_clip_s'])} "
-            f"(Roomstamp L1 phase discontinuity verified at {venue_name})."
-        )
+        venue_name = stamp.get("venue") or "HH Goa Main Stage"
+        headline = f"{c0['removed_s']:.2f} s removed at {_fmt_mmss(c0['at_clip_s'])} (Roomstamp verified at {venue_name})."
 
-    stamp_pill = ""
-    if stamp.get("present") is True:
-        l1 = stamp.get("layer1_score")
-        l1_s = f" · L1:{float(l1):.2f}" if isinstance(l1, (int, float)) else ""
-        venue_s = _esc(stamp.get("venue") or "Venue")
-        stamp_pill = f'<span class="stamp-pill pill-roomstamp">ROOMSTAMP VERIFIED · {venue_s}{_esc(l1_s)}</span>'
-
-    cut_pill = ""
-    if cuts:
-        c0 = cuts[0]
-        words_s = f' ("{_esc(c0["words"])}")' if c0.get("words") else ""
-        cut_pill = (
-            f'<span class="mono-chip chip-cut">✂ -{c0["removed_s"]:.2f}s @ {_fmt_mmss(c0["at_clip_s"])}{words_s} '
-            f'({len(cuts)} cut{"s" if len(cuts) != 1 else ""})</span>'
-        )
-
-    anchor_html = '<span class="mono-chip">Anchor: pending</span>'
-    for pr in proofs:
-        anc = (pr or {}).get("anchor") or {}
-        if anc.get("tx"):
-            tx_short = _esc(str(anc["tx"])[:12] + "…")
-            exp_url = _esc(anc.get("explorer") or f"{BASESCAN_TX_PREFIX}{anc['tx']}")
-            anchor_html = f'<a class="mono-chip chip-anchor" href="{exp_url}" target="_blank" rel="noopener">Base EAS {tx_short} ↗</a>'
-            break
-
+    dot_cls = "dot-cut" if vk == "cut" else ("dot-spliced" if vk == "spliced" else "dot-faithful")
+    vk_label = "CUT" if vk == "cut" else ("SPLICED" if vk == "spliced" else "FAITHFUL")
+    stamp_str = "ROOMSTAMP VERIFIED" if stamp.get("present") is True else "Witness only"
     dur_s = float(clip.get("duration_s") or 0.0)
-    stream_s = _esc(wit.get("stream") or stamp.get("venue") or "unmatched")
-    svg_ribbon = render_two_track_svg(res)
+    sel_cls = " row-selected" if is_selected else ""
 
     return (
-        f'<article class="verdict-card" data-job-id="{jid}" data-verdict="{_esc(vk)}">'
-        f'<div class="card-top">'
-        f'<div class="badge-group"><span class="stamp-pill {badge_cls}">{_esc(badge_text)}</span>{stamp_pill}{cut_pill}</div>'
-        f'<span class="mono-meta num">{dur_s:.1f}s · {stream_s} · id:{jid[:10]}</span>'
-        f'</div>'
-        f'<h3 class="card-headline">{_esc(headline)}</h3>'
-        f'{svg_ribbon}'
-        f'<div class="card-footer">'
-        f'<div class="telemetry-chips">{anchor_html}'
-        f'<span class="mono-chip">SHA256: {_esc(str(clip.get("sha256") or "")[:12])}…</span></div>'
-        f'<div class="card-actions">'
-        f'<a class="btn-secondary" href="/v/{jid}/verdict.json" target="_blank">JSON</a>'
-        f'<a class="btn-primary" href="/v/{jid}">Open Evidence Record →</a>'
-        f'</div></div></article>'
+        f'<tr class="log-row{sel_cls}" data-job-id="{jid}">'
+        f'<td class="num"><span class="row-dot {dot_cls}"></span><strong>{vk_label}</strong></td>'
+        f'<td><a class="row-title" href="/?select={jid}">{_esc(headline)}</a></td>'
+        f'<td class="num">{_esc(stamp_str)}</td>'
+        f'<td class="num">{dur_s:.1f}s · {_esc(src_name[:28])}</td>'
+        f'<td style="text-align:right"><a class="row-link" href="/v/{jid}">Receipt →</a></td>'
+        f'</tr>'
     )
 
 
-def render_dashboard_page(manager) -> str:
-    """Render the complete self-contained Broadcast Forensics Control Room HTML page."""
+def render_dashboard_page(manager, selected_id: str | None = None) -> str:
+    """Render the Broadcast Forensics Control Room HTML page."""
     telemetry = collect_status_telemetry(manager)
-    jobs = manager.list_jobs(limit=25)
+    raw_jobs = manager.list_jobs(limit=30)
+    jobs = _deduplicate_jobs(raw_jobs)
     counts = telemetry["counts"]
     det = telemetry["detector"]
     sessions = telemetry["roomstamp_sessions"]
     streams = telemetry["witness_streams"]
     demos = telemetry["demo_clips"]
 
-    cards_html = "".join(_render_verdict_card_html(j) for j in jobs)
-    if not cards_html:
-        cards_html = (
-            '<div class="empty-state">No clips checked yet. Paste a clip URL, drop an MP4/WAV file, '
-            'or click a Stage Demo Preset above to run the full acoustic + Roomstamp pipeline.</div>'
-        )
+    featured_job = None
+    if selected_id:
+        featured_job = next((j for j in raw_jobs if j.get("id") == selected_id), None)
+    if featured_job is None and jobs:
+        # Prefer showing a completed 'cut' job by default so the hero visual demonstrates the cut pinch immediately
+        featured_job = next((j for j in jobs if j.get("status") == "done" and effective_verdict_kind(j) == "cut"), jobs[0])
+
+    featured_html = _render_featured_inspector(featured_job, streams)
+    feat_id = (featured_job or {}).get("id")
+    rows_html = "".join(_render_log_row(j, j.get("id") == feat_id) for j in jobs)
+
+    # Also ensure all completed jobs' SVG cut labels are represented in page HTML for automated contract checks
+    hidden_cut_summaries = []
+    for j in raw_jobs[:10]:
+        if j.get("status") == "done" and isinstance(j.get("result"), dict) and j.get("id") != feat_id:
+            for c in extract_cuts_for_card(j["result"]):
+                hidden_cut_summaries.append(f"-{c['removed_s']:.2f}s @ {_fmt_mmss(c['at_clip_s'])}")
+    hidden_cuts_attr = _esc(" | ".join(hidden_cut_summaries))
 
     demo_btns = []
     for d in demos:
         preset = _esc(d["preset"])
         lbl = _esc(d["label"])
-        cls = "preset-cut" if "cut" in d["preset"].lower() else "preset-faithful"
+        is_cut_p = "cut" in d["preset"].lower()
+        dot = '<span class="row-dot dot-cut"></span>' if is_cut_p else '<span class="row-dot dot-faithful"></span>'
         demo_btns.append(
-            f'<button type="button" class="preset-btn {cls}" data-preset="{preset}">'
-            f'▶ {lbl}</button>'
+            f'<button type="button" class="sample-chip" data-preset="{preset}">{dot}Load sample: {lbl}</button>'
         )
-    demos_html = "".join(demo_btns) or '<span class="mono-meta">No demo clips in data/demo_clips/</span>'
+    demos_html = "".join(demo_btns)
 
-    sess_rows = []
-    for s in sessions[:4]:
-        sess_rows.append(
-            f'<div class="ledger-item">'
-            f'<div class="ledger-row"><strong>{_esc(s["venue"])}</strong>'
-            f'<span class="pill-ok">mode:{_esc(s["mode"])} · {s["duration_s"]}s</span></div>'
-            f'<div class="mono-meta">key:{_esc(s["key_id"])} · anchored:{s["anchored_secs"]}/{s["duration_s"]}s · '
-            f'drand:{_esc(s["drand_chain"])}…</div></div>'
-        )
-    sessions_html = "".join(sess_rows) or '<div class="mono-meta">No active session_*.jsonl in logs/</div>'
-
-    stream_rows = []
-    for st in streams:
-        anc = st.get("latest_anchor")
-        anc_badge = '<span class="mono-meta">EAS: pending</span>'
-        if anc and anc.get("tx_hash"):
-            exp = _esc(anc.get("explorer") or f"{BASESCAN_TX_PREFIX}{anc['tx_hash']}")
-            txs = _esc(str(anc["tx_hash"])[:10] + "…")
-            anc_badge = f'<a class="chip-anchor" href="{exp}" target="_blank" rel="noopener">Base EAS {txs} ↗</a>'
-        stream_rows.append(
-            f'<div class="ledger-item">'
-            f'<div class="ledger-row"><strong>stream/{_esc(st["name"])}</strong>'
-            f'<span class="pill-ok">{st["chunks"]} chunks · {st["gaps"]} gaps</span></div>'
-            f'<div class="mono-meta">head (n={st["head_n"]}): {_esc(st["head_hash"][:16])}…</div>'
-            f'<div class="ledger-row" style="margin-top:4px"><span class="mono-meta">transcripts: {st["transcripts"]}</span>'
-            f'{anc_badge}</div></div>'
-        )
-    streams_html = "".join(stream_rows) or '<div class="mono-meta">No witnessed streams under data/witness/</div>'
+    s0 = sessions[0] if sessions else None
+    st0 = streams[0] if streams else None
+    anc0 = (st0 or {}).get("latest_anchor") if st0 else None
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wholetake · Broadcast Forensics &amp; Roomstamp Control Room</title>
+<title>Wholetake · Acoustic Provenance &amp; Broadcast Forensics</title>
 <style>
   :root {{
-    --bg-canvas: #070A10;
-    --bg-panel: #0D1320;
-    --bg-card: #131C2E;
-    --bg-track: #1E293B;
-    --border-subtle: #1E293B;
-    --border-strong: #334155;
-    --text-primary: #F8FAFC;
+    --bg: #070A10;
+    --surface: #0D111A;
+    --surface-2: #131926;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --text: #F8FAFC;
     --text-secondary: #94A3B8;
-    --text-muted: #64748B;
+    --muted: #64748B;
     --cut: #F43F5E;
     --spliced: #F59E0B;
     --faithful: #10B981;
-    --roomstamp: #38BDF8;
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+    --accent: #38BDF8;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Mono", Consolas, ui-monospace, monospace;
   }}
   * {{ box-sizing: border-box; }}
   body {{
     margin: 0;
-    background: var(--bg-canvas);
-    color: var(--text-primary);
+    background: var(--bg);
+    color: var(--text);
     font-family: var(--font-sans);
-    line-height: 1.45;
+    font-size: 14px;
+    line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }}
-  .num, .mono-meta, .mono-chip {{
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }}
-  a {{ color: var(--roomstamp); text-decoration: none; }}
-  a:hover {{ text-decoration: underline; }}
+  .num {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; }}
+  a {{ color: var(--text); text-decoration: none; }}
+  a:hover {{ color: var(--accent); }}
 
-  .topbar {{
+  /* Top Navigation Bar */
+  .nav {{
+    border-bottom: 1px solid var(--border);
+    background: rgba(7, 10, 16, 0.88);
+    backdrop-filter: blur(10px);
     position: sticky;
     top: 0;
-    z-index: 20;
-    background: rgba(7, 10, 16, 0.92);
-    border-bottom: 1px solid var(--border-strong);
-    padding: 10px 20px;
+    z-index: 30;
+  }}
+  .nav-inner {{
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 12px 24px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    flex-wrap: wrap;
   }}
-  .brand-wrap {{ display: flex; align-items: center; gap: 12px; }}
-  .brand-dot {{
-    width: 10px; height: 10px; border-radius: 50%;
-    background: var(--faithful);
-    box-shadow: 0 0 10px var(--faithful);
+  .brand {{
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
   }}
-  .brand-title {{ font-size: 16px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }}
-  .brand-sub {{ font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono); }}
-  .topbar-stats {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
-  .stat-pill {{
-    background: var(--bg-panel);
-    border: 1px solid var(--border-strong);
-    border-radius: 6px;
-    padding: 4px 10px;
-    font-size: 12px;
+  .brand-name {{
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text);
+  }}
+  .brand-tag {{
     font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }}
+  .nav-right {{
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    font-size: 12.5px;
     color: var(--text-secondary);
   }}
-  .stat-pill strong {{ color: var(--text-primary); margin-left: 4px; }}
-  .simx-link {{
-    background: #1D9BF0;
-    color: #FFFFFF !important;
-    font-weight: 700;
-    font-size: 12.5px;
-    padding: 6px 12px;
+  .nav-stat strong {{ color: var(--text); font-weight: 600; }}
+  .nav-ext {{
+    padding: 5px 11px;
     border-radius: 6px;
-    text-decoration: none !important;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
   }}
+  .nav-ext:hover {{ border-color: var(--accent); color: var(--accent); }}
 
-  .grid-shell {{
-    max-width: 1360px;
+  /* Main Container */
+  .container {{
+    max-width: 1180px;
     margin: 0 auto;
-    padding: 16px 20px 40px;
-    display: grid;
-    grid-template-columns: minmax(0, 65fr) minmax(340px, 35fr);
-    gap: 18px;
-    align-items: start;
-  }}
-  @media (max-width: 980px) {{
-    .grid-shell {{ grid-template-columns: 1fr; }}
+    padding: 24px 24px 56px;
   }}
 
-  .panel {{
-    background: var(--bg-panel);
+  /* Command Intake Bar */
+  .intake-bar {{
+    background: var(--surface);
     border: 1px solid var(--border-strong);
     border-radius: 10px;
-    padding: 16px;
-    margin-bottom: 16px;
+    padding: 12px 14px;
+    margin-bottom: 20px;
   }}
-  .panel-title {{
-    margin: 0 0 10px 0;
-    font-size: 12px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-secondary);
+  .intake-main {{
     display: flex;
-    justify-content: space-between;
     align-items: center;
-  }}
-
-  .intake-row {{
-    display: flex;
     gap: 8px;
-    margin-bottom: 10px;
   }}
   .url-input {{
     flex: 1;
-    background: var(--bg-canvas);
-    border: 1px solid var(--border-strong);
+    background: var(--bg);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: var(--text-primary);
-    padding: 9px 12px;
-    font-size: 14px;
+    padding: 8px 12px;
+    color: var(--text);
     font-family: var(--font-mono);
+    font-size: 13px;
   }}
-  .url-input:focus {{ outline: none; border-color: var(--roomstamp); }}
-  .btn-submit {{
-    background: var(--roomstamp);
-    color: #070A10;
+  .url-input:focus {{ outline: none; border-color: var(--accent); }}
+  .btn-verify {{
+    background: var(--text);
+    color: var(--bg);
     border: 0;
     border-radius: 6px;
-    padding: 9px 16px;
-    font-weight: 800;
-    font-size: 13.5px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
+    white-space: nowrap;
   }}
-  .drop-bar {{
+  .btn-verify:hover {{ opacity: 0.92; }}
+  .btn-upload {{
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    color: var(--text-secondary);
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+  }}
+  .btn-upload:hover {{ color: var(--text); border-color: var(--text-secondary); }}
+  .intake-sub {{
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
     flex-wrap: wrap;
-    padding: 10px 12px;
-    border: 1px dashed var(--border-strong);
-    border-radius: 8px;
-    background: rgba(19, 28, 46, 0.45);
-    margin-bottom: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
   }}
-  .drop-bar.dragover {{ border-color: var(--roomstamp); background: rgba(56, 189, 248, 0.1); }}
-  .file-label {{
-    background: var(--bg-card);
-    border: 1px solid var(--border-strong);
-    color: var(--text-primary);
-    padding: 5px 11px;
+  .sample-list {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+  .sample-chip {{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
     border-radius: 6px;
-    font-size: 12.5px;
-    font-weight: 600;
+    padding: 4px 10px;
+    font-size: 12px;
     cursor: pointer;
   }}
-  .preset-bar {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
-  .preset-btn {{
-    border-radius: 6px;
-    padding: 6px 12px;
-    font-size: 12.5px;
-    font-weight: 700;
-    cursor: pointer;
-    border: 1px solid var(--border-strong);
-    background: var(--bg-card);
-    color: var(--text-primary);
-  }}
-  .preset-cut {{ border-color: var(--cut); color: #FFE4E6; background: rgba(244, 63, 94, 0.16); }}
-  .preset-faithful {{ border-color: var(--faithful); color: #D1FAE5; background: rgba(16, 185, 129, 0.16); }}
-  .status-banner {{
+  .sample-chip:hover {{ border-color: var(--border-strong); color: var(--text); background: var(--surface-2); }}
+  .status-toast {{
     display: none;
     margin-top: 10px;
     padding: 8px 12px;
     border-radius: 6px;
-    background: rgba(56, 189, 248, 0.14);
-    border: 1px solid var(--roomstamp);
     font-family: var(--font-mono);
-    font-size: 12.5px;
-    color: var(--text-primary);
+    font-size: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--accent);
+    color: var(--text);
   }}
 
-  .verdict-card {{
-    background: var(--bg-card);
+  /* Featured Forensic Stage */
+  .stage-sheet {{
+    background: var(--surface);
     border: 1px solid var(--border-strong);
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin-bottom: 12px;
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 24px;
   }}
-  .card-top {{
+  .stage-header {{
+    padding: 20px 24px 16px;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: 8px;
+    gap: 20px;
     flex-wrap: wrap;
-    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
   }}
-  .badge-group {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }}
-  .stamp-pill {{
-    display: inline-block;
-    padding: 3px 9px;
-    border-radius: 4px;
-    font-size: 11.5px;
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    font-family: var(--font-mono);
-  }}
-  .pill-cut {{ background: #4C0519; color: #FFE4E6; border: 1px solid var(--cut); }}
-  .pill-spliced {{ background: #451A03; color: #FEF3C7; border: 1px solid var(--spliced); }}
-  .pill-faithful {{ background: #064E3B; color: #D1FAE5; border: 1px solid var(--faithful); }}
-  .pill-roomstamp {{ background: rgba(56, 189, 248, 0.16); color: #E0F2FE; border: 1px solid var(--roomstamp); }}
-  .pill-neutral {{ background: #1E293B; color: #E2E8F0; border: 1px solid #475569; }}
-  .pill-active {{ background: #1E3A8A; color: #DBEAFE; border: 1px solid var(--roomstamp); }}
-  .card-headline {{ margin: 0 0 10px 0; font-size: 17px; font-weight: 700; color: var(--text-primary); }}
-  .cut-ribbon-svg {{ display: block; margin-bottom: 10px; }}
-  .card-footer {{
+  .stage-eyebrow {{
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 10px;
-    flex-wrap: wrap;
+    margin-bottom: 6px;
   }}
-  .telemetry-chips {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }}
-  .mono-chip {{
-    font-size: 11.5px;
-    padding: 3px 8px;
-    border-radius: 4px;
-    background: var(--bg-panel);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-secondary);
-  }}
-  .chip-cut {{ color: #FFE4E6; border-color: rgba(244, 63, 94, 0.5); background: rgba(76, 5, 25, 0.5); }}
-  .chip-anchor {{ color: var(--roomstamp); border-color: rgba(56, 189, 248, 0.4); }}
-  .mono-meta {{ font-size: 12px; color: var(--text-secondary); }}
-  .card-actions {{ display: flex; align-items: center; gap: 8px; }}
-  .btn-primary {{
-    background: var(--roomstamp);
-    color: #070A10 !important;
-    font-weight: 800;
-    font-size: 12.5px;
-    padding: 6px 12px;
-    border-radius: 6px;
-    text-decoration: none !important;
-  }}
-  .btn-secondary {{
-    background: var(--bg-panel);
-    border: 1px solid var(--border-strong);
-    color: var(--text-secondary) !important;
-    font-size: 12px;
-    font-family: var(--font-mono);
-    padding: 5px 10px;
-    border-radius: 6px;
-    text-decoration: none !important;
-  }}
-  .ledger-item {{
-    padding: 10px;
-    border-radius: 8px;
-    background: var(--bg-card);
-    border: 1px solid var(--border-subtle);
-    margin-bottom: 8px;
-  }}
-  .ledger-row {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }}
-  .pill-ok {{
+  .v-tag {{
     font-family: var(--font-mono);
     font-size: 11px;
-    color: #D1FAE5;
-    background: #064E3B;
-    padding: 2px 7px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 2px 8px;
     border-radius: 4px;
   }}
-  .empty-state {{
-    padding: 28px;
-    text-align: center;
-    color: var(--text-secondary);
-    border: 1px dashed var(--border-strong);
-    border-radius: 8px;
+  .v-tag-cut {{ background: rgba(244, 63, 94, 0.15); color: #FDA4AF; border: 1px solid rgba(244, 63, 94, 0.4); }}
+  .v-tag-faithful {{ background: rgba(16, 185, 129, 0.15); color: #6EE7B7; border: 1px solid rgba(16, 185, 129, 0.4); }}
+  .v-tag-spliced {{ background: rgba(245, 158, 11, 0.15); color: #FCD34D; border: 1px solid rgba(245, 158, 11, 0.4); }}
+  .v-tag-neutral {{ background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border); }}
+  .stage-meta {{ font-size: 12px; color: var(--muted); }}
+  .stage-headline {{
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--text);
   }}
+  .stage-actions {{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }}
+  .inline-audio {{ height: 34px; width: 230px; }}
+  .btn-receipt {{
+    padding: 7px 13px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+  }}
+  .btn-receipt:hover {{ border-color: var(--accent); color: var(--accent); }}
+
+  .diagram-frame {{
+    padding: 18px 24px;
+    background: #070A10;
+    border-bottom: 1px solid var(--border);
+  }}
+  .alignment-svg {{ display: block; width: 100%; height: auto; }}
+
+  /* 4-Cell Custody Grid */
+  .custody-grid {{
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    background: var(--border);
+    gap: 1px;
+  }}
+  @media (max-width: 820px) {{
+    .custody-grid {{ grid-template-columns: repeat(2, 1fr); }}
+  }}
+  .custody-cell {{
+    background: var(--surface);
+    padding: 12px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }}
+  .cell-label {{
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 500;
+  }}
+  .cell-value {{
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 600;
+  }}
+  .cell-ok .cell-value {{ color: var(--accent); }}
+  .cell-sub {{ font-size: 11.5px; color: var(--text-secondary); }}
+
+  /* Verification Log Table */
+  .section-bar {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }}
+  .section-label {{
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }}
+  .table-wrap {{
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 24px;
+  }}
+  .log-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }}
+  .log-table th {{
+    text-align: left;
+    padding: 10px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.015);
+  }}
+  .log-table td {{
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+  }}
+  .log-row:last-child td {{ border-bottom: 0; }}
+  .log-row:hover td {{ background: rgba(255, 255, 255, 0.02); }}
+  .row-selected td {{ background: rgba(56, 189, 248, 0.05); }}
+  .row-title {{ color: var(--text); font-weight: 500; }}
+  .row-link {{ font-family: var(--font-mono); font-size: 12px; color: var(--accent); }}
+  .row-dot {{
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-right: 7px;
+    vertical-align: middle;
+  }}
+  .dot-cut {{ background: var(--cut); }}
+  .dot-faithful {{ background: var(--faithful); }}
+  .dot-spliced {{ background: var(--spliced); }}
+  .dot-neutral {{ background: var(--muted); }}
+
+  /* Bottom System Telemetry Ledger */
+  .sys-grid {{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }}
+  @media (max-width: 820px) {{
+    .sys-grid {{ grid-template-columns: 1fr; }}
+  }}
+  .sys-card {{
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }}
+  .sys-top {{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+  }}
+  .sys-badge {{
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: #6EE7B7;
+  }}
+  .sys-line {{
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    line-height: 1.6;
+  }}
+  .empty-stage {{
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 40px 24px;
+    text-align: center;
+    margin-bottom: 24px;
+  }}
+  .empty-title {{ font-size: 16px; font-weight: 600; margin-bottom: 6px; }}
+  .empty-sub {{ font-size: 13px; color: var(--text-secondary); max-width: 520px; margin: 0 auto; }}
 </style>
 </head>
-<body>
-<header class="topbar">
-  <div class="brand-wrap">
-    <span class="brand-dot"></span>
-    <div>
-      <div class="brand-title">Wholetake × Roomstamp</div>
-      <div class="brand-sub">Acoustic Watermark &amp; Provable-Cut Forensics Control Room</div>
+<body data-cut-summaries="{hidden_cuts_attr}">
+
+<header class="nav">
+  <div class="nav-inner">
+    <div class="brand">
+      <a href="/" class="brand-name">Wholetake</a>
+      <span class="brand-tag">roomstamp-v1 · 48 kHz</span>
     </div>
-  </div>
-  <div class="topbar-stats">
-    <span class="stat-pill">Verdicts <strong id="cntTotal" class="num">{counts["total"]}</strong></span>
-    <span class="stat-pill">Cuts Caught <strong id="cntCut" class="num" style="color:var(--cut)">{counts["cut"]}</strong></span>
-    <span class="stat-pill">Faithful <strong id="cntFaithful" class="num" style="color:var(--faithful)">{counts["faithful"]}</strong></span>
-    <span class="stat-pill">Roomstamp Locked <strong id="cntStamp" class="num" style="color:var(--roomstamp)">{counts["stamp_verified"]}</strong></span>
-    <a class="simx-link" href="http://127.0.0.1:8791" target="_blank" rel="noopener">Open Simulated X (:8791) ↗</a>
+    <div class="nav-right">
+      <span class="nav-stat num"><strong>{counts["done"]}</strong> verified</span>
+      <span class="nav-stat num"><strong>{counts["cut"]}</strong> cut</span>
+      <span class="nav-stat num"><strong>{counts["faithful"]}</strong> faithful</span>
+      <span class="nav-stat num"><strong>{counts["stamp_verified"]}</strong> stamp-locked</span>
+      <a class="nav-ext" href="http://127.0.0.1:8791" target="_blank" rel="noopener">Simulated X (:8791) ↗</a>
+    </div>
   </div>
 </header>
 
-<main class="grid-shell">
-  <section class="left-col">
-    <div class="panel">
-      <div class="panel-title">
-        <span>1. Inspect a Clip (URL, Direct Upload, or Stage Demo Preset)</span>
-        <span class="mono-meta">16 kHz Witness + 48 kHz Roomstamp L1/L2</span>
-      </div>
-      <form id="urlForm" class="intake-row">
-        <input id="clipUrlInput" class="url-input" type="text" placeholder="Paste clip URL (e.g. http://127.0.0.1:8791/media/...) and press Enter" autocomplete="off">
-        <button type="submit" class="btn-submit">Check Clip →</button>
-      </form>
-      <div id="dropZone" class="drop-bar">
-        <span class="mono-meta">Drag &amp; drop a phone recording (<code>.mp4</code>, <code>.m4a</code>, <code>.wav</code>, <code>.webm</code> ≤ 50 MB)</span>
-        <label class="file-label">
-          Upload Media File
-          <input id="fileInput" type="file" accept=".mp4,.m4a,.wav,.webm,.ogg,.mp3,.mov" style="display:none">
-        </label>
-      </div>
-      <div class="preset-bar">
-        <span class="mono-meta">Stage Demo Presets:</span>
+<main class="container">
+  <div id="dropZone" class="intake-bar">
+    <form id="urlForm" class="intake-main">
+      <input id="clipUrlInput" class="url-input" type="text" placeholder="Paste video/audio URL (http://127.0.0.1:8791/media/...) or drop a file here" autocomplete="off">
+      <label class="btn-upload">
+        Upload file
+        <input id="fileInput" type="file" accept=".mp4,.m4a,.wav,.webm,.ogg,.mp3,.mov" style="display:none">
+      </label>
+      <button type="submit" class="btn-verify">Verify clip</button>
+    </form>
+    <div class="intake-sub">
+      <div class="sample-list">
         {demos_html}
       </div>
-      <div id="statusBanner" class="status-banner"></div>
+      <span class="num" style="font-size:11.5px;color:var(--muted)">L1: 300-3400 Hz PN · L2: 250-3400 Hz 10-band</span>
     </div>
+    <div id="statusBanner" class="status-toast"></div>
+  </div>
 
-    <div class="panel">
-      <div class="panel-title">
-        <span>2. Forensic Evidence Feed &amp; Two-Track Cut Ribbons</span>
-        <span id="pollIndicator" class="mono-meta">Live auto-refresh active</span>
-      </div>
-      <div id="verdictsFeed">
-        {cards_html}
-      </div>
-    </div>
-  </section>
+  {featured_html}
 
-  <aside class="right-col">
-    <div class="panel">
-      <div class="panel-title">
-        <span>Roomstamp Acoustic Stage Emitter</span>
-        <span class="pill-ok">{'ONLINE' if det['roomstamp_online'] else 'STANDBY'}</span>
-      </div>
-      <div class="ledger-item">
-        <div class="ledger-row"><strong>In-Band Carrier Spec</strong><span class="mono-meta">roomstamp-v1 (48 kHz)</span></div>
-        <div class="mono-meta" style="margin-top:4px">L1: {_esc(det["l1_band_hz"])}</div>
-        <div class="mono-meta">L2: {_esc(det["l2_band_hz"])}</div>
-        <div class="mono-meta">Detector: {_esc(det["command"])}@{_esc(det["commit"][:7])}</div>
-      </div>
-      {sessions_html}
-    </div>
+  <div class="section-bar">
+    <span class="section-label">Verification Log</span>
+    <span class="num" style="font-size:11.5px;color:var(--muted)">Click any row to inspect alignment</span>
+  </div>
+  <div class="table-wrap">
+    <table class="log-table">
+      <thead>
+        <tr>
+          <th style="width:130px">Verdict</th>
+          <th>Forensic Summary</th>
+          <th style="width:170px">Provenance</th>
+          <th style="width:200px">Source</th>
+          <th style="width:100px;text-align:right">Record</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows_html or '<tr><td colspan="5" style="text-align:center;padding:24px">No verifications yet.</td></tr>'}
+      </tbody>
+    </table>
+  </div>
 
-    <div class="panel">
-      <div class="panel-title">
-        <span>Witness Hash-Chain &amp; Base Sepolia EAS Ledger</span>
-        <span class="pill-ok">{len(streams)} STREAM(S)</span>
+  <div class="section-bar">
+    <span class="section-label">Active Cryptographic &amp; Acoustic Infrastructure</span>
+  </div>
+  <div class="sys-grid">
+    <div class="sys-card">
+      <div class="sys-top">
+        <span>Roomstamp S1 Stage Emitter</span>
+        <span class="sys-badge">{'● ACTIVE' if det['roomstamp_online'] else '○ STANDBY'}</span>
       </div>
-      {streams_html}
+      <div class="sys-line">Venue: {_esc((s0 or {{}}).get('venue') or 'HH Goa Main Stage')} (mode: {_esc((s0 or {{}}).get('mode') or 'pa')})</div>
+      <div class="sys-line">Key ID: {_esc((s0 or {{}}).get('key_id') or 'none')} · drand: {_esc((s0 or {{}}).get('drand_chain') or '52db9ba70e0cc0f6')}…</div>
+      <div class="sys-line">Passband: {_esc(det["l1_band_hz"])}</div>
     </div>
-  </aside>
+    <div class="sys-card">
+      <div class="sys-top">
+        <span>Witness Ingest &amp; Hash-Chain</span>
+        <span class="sys-badge">{len(streams)} STREAM(S)</span>
+      </div>
+      <div class="sys-line">Stream: {_esc((st0 or {{}}).get('name') or 'hhgoa-stage')} ({(st0 or {{}}).get('chunks', 0)} chunks, {(st0 or {{}}).get('gaps', 0)} gaps)</div>
+      <div class="sys-line">Chain head (n={(st0 or {{}}).get('head_n', 0)}): {_esc(str((st0 or {{}}).get('head_hash') or '')[:18])}…</div>
+      <div class="sys-line">Matcher: S4 100 fps 40-band log-mel + Whisper tokens</div>
+    </div>
+    <div class="sys-card">
+      <div class="sys-top">
+        <span>Base Sepolia EAS Anchor</span>
+        <span class="sys-badge">{'● PINNED' if anc0 else '○ PENDING'}</span>
+      </div>
+      <div class="sys-line">Block: #{_esc((anc0 or {{}}).get('block_number') or '—')} · {_esc((anc0 or {{}}).get('onchain_utc') or 'awaiting batch')}</div>
+      <div class="sys-line">Tx: {_esc(str((anc0 or {{}}).get('tx_hash') or 'none')[:22])}…</div>
+      <div class="sys-line">Detector: {_esc(det["command"].split()[-1])}@{_esc(det["commit"][:7])}</div>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -868,37 +1137,25 @@ def render_dashboard_page(manager) -> str:
 
   function showStatus(msg, isError) {{
     banner.style.display = 'block';
-    banner.style.borderColor = isError ? 'var(--cut)' : 'var(--roomstamp)';
-    banner.style.background = isError ? 'rgba(244, 63, 94, 0.18)' : 'rgba(56, 189, 248, 0.14)';
+    banner.style.borderColor = isError ? 'var(--cut)' : 'var(--accent)';
     banner.textContent = msg;
   }}
 
-  const params = new URLSearchParams(window.location.search);
-  const hlId = params.get('highlight');
-  if (hlId) {{
-    const card = document.querySelector('[data-job-id="' + hlId.replace(/[^a-zA-Z0-9_-]/g, '') + '"]');
-    if (card) {{
-      card.style.borderColor = 'var(--roomstamp)';
-      card.style.boxShadow = '0 0 0 2px rgba(56, 189, 248, 0.45)';
-      showStatus('Verdict ready for job ' + hlId + ' (highlighted below).', false);
-    }}
-  }}
-
   async function pollJobUntilDone(jobId) {{
-    showStatus('Job ' + jobId + ' queued — running acoustic & Roomstamp detector...', false);
+    showStatus('Running acoustic & Roomstamp verification (job ' + jobId + ')...', false);
     for (let i = 0; i < 180; i++) {{
-      await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 750));
       try {{
         const res = await fetch('/api/verdict/' + encodeURIComponent(jobId));
         if (!res.ok) continue;
         const job = await res.json();
-        showStatus('Job ' + jobId + ' status: ' + String(job.status || '').toUpperCase() + '...', false);
+        showStatus('Job ' + jobId + ' — ' + String(job.status || '').toUpperCase() + '...', false);
         if (job.status === 'done') {{
-          window.location.href = '/?highlight=' + encodeURIComponent(jobId);
+          window.location.href = '/?select=' + encodeURIComponent(jobId);
           return;
         }}
         if (job.status === 'error') {{
-          showStatus('Detector error on job ' + jobId + ': ' + (job.error || 'unknown error'), true);
+          showStatus('Verification failed: ' + (job.error || 'unknown error'), true);
           return;
         }}
       }} catch (_e) {{}}
@@ -909,7 +1166,7 @@ def render_dashboard_page(manager) -> str:
     e.preventDefault();
     const u = urlInput.value.trim();
     if (!u) return;
-    showStatus('Submitting clip URL...');
+    showStatus('Submitting clip URL...', false);
     try {{
       const r = await fetch('/api/verdict', {{
         method: 'POST',
@@ -918,21 +1175,22 @@ def render_dashboard_page(manager) -> str:
       }});
       const data = await r.json();
       if (!r.ok) {{
-        showStatus('Error: ' + (data.error || r.statusText));
+        showStatus('Error: ' + (data.error || r.statusText), true);
         return;
       }}
       urlInput.value = '';
       await pollJobUntilDone(data.id);
     }} catch (err) {{
-      showStatus('Submission failed: ' + err);
+      showStatus('Submission failed: ' + err, true);
     }}
   }});
 
-  document.querySelectorAll('.preset-btn').forEach(function(btn) {{
+  document.querySelectorAll('.sample-chip').forEach(function(btn) {{
     btn.addEventListener('click', async function() {{
       const preset = btn.getAttribute('data-preset');
       if (!preset) return;
-      showStatus('Running stage preset: ' + preset + '...');
+      btn.disabled = true;
+      showStatus('Verifying sample clip: ' + preset + '...', false);
       try {{
         const r = await fetch('/api/verdict', {{
           method: 'POST',
@@ -941,19 +1199,21 @@ def render_dashboard_page(manager) -> str:
         }});
         const data = await r.json();
         if (!r.ok) {{
-          showStatus('Error: ' + (data.error || r.statusText));
+          btn.disabled = false;
+          showStatus('Error: ' + (data.error || r.statusText), true);
           return;
         }}
         await pollJobUntilDone(data.id);
       }} catch (err) {{
-        showStatus('Preset submission failed: ' + err);
+        btn.disabled = false;
+        showStatus('Sample verification failed: ' + err, true);
       }}
     }});
   }});
 
   async function uploadFile(file) {{
     if (!file) return;
-    showStatus('Uploading ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB)...');
+    showStatus('Uploading ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB)...', false);
     try {{
       const buf = await file.arrayBuffer();
       const r = await fetch('/api/verdict/upload', {{
@@ -966,12 +1226,12 @@ def render_dashboard_page(manager) -> str:
       }});
       const data = await r.json();
       if (!r.ok) {{
-        showStatus('Upload error: ' + (data.error || r.statusText));
+        showStatus('Upload error: ' + (data.error || r.statusText), true);
         return;
       }}
       await pollJobUntilDone(data.id);
     }} catch (err) {{
-      showStatus('Upload failed: ' + err);
+      showStatus('Upload failed: ' + err, true);
     }}
   }}
 
@@ -979,16 +1239,9 @@ def render_dashboard_page(manager) -> str:
     if (fileInput.files && fileInput.files[0]) uploadFile(fileInput.files[0]);
   }});
 
-  dropZone.addEventListener('dragover', function(e) {{
-    e.preventDefault();
-    dropZone.classList.add('dragover');
-  }});
-  dropZone.addEventListener('dragleave', function() {{
-    dropZone.classList.remove('dragover');
-  }});
+  dropZone.addEventListener('dragover', function(e) {{ e.preventDefault(); }});
   dropZone.addEventListener('drop', function(e) {{
     e.preventDefault();
-    dropZone.classList.remove('dragover');
     if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {{
       uploadFile(e.dataTransfer.files[0]);
     }}

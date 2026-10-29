@@ -1180,7 +1180,11 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
 
     wsec = contract.empty_witness("no --witness-root")
     if "wt" in want and witness_root:
-        l1r = L["l1"].get("recorded_at_unix") if L["l1"].get("status") in ("present", "inconclusive") else None
+        l1r = (
+            L["l1"].get("recorded_at_unix")
+            if (L["l1"].get("status") in ("present", "inconclusive") or L["l1"].get("content_match"))
+            else None
+        )
         try:
             wsec, s4 = contract.witness_section(clip.x, witness_root, l1r or t_around, W,
                                                 budget_s=max(10.0, deadline - time.time() - 60))
@@ -1209,7 +1213,9 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         l2_skip = None
     if l2_skip is None:
         l1 = L["l1"]
-        if l1.get("recorded_at_unix") is not None and l1.get("status") in ("present", "inconclusive"):
+        if l1.get("recorded_at_unix") is not None and (
+            l1.get("status") in ("present", "inconclusive") or l1.get("content_match")
+        ):
             c = l1["recorded_at_unix"]
             l2_window = (int(c - 30), int(c + clip.duration_s * 1.6 + 30))
         elif sl is not None:
