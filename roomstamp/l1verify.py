@@ -645,10 +645,14 @@ def _absorb_blips(clip, rend, pieces, chans, channel):
     return pieces, chans
 
 
-def _split_pieces(clip, rend, pieces, chans):
+def _split_pieces(clip, rend, pieces, chans, channel=None):
     """Place each cut between consecutive pieces (from their matched spans, not from spans
     already moved by a neighbouring cut). A piece the cuts squeeze to < MIN_PIECE_S is dropped
     and the cut between its neighbours placed again."""
+    if channel is None:
+        def channel(p: Piece) -> Channel:
+            c0, c1 = max(0, p.c0), min(len(clip), p.c1)
+            return Channel(clip[c0:c1], warp([rend.voice], p.f(np.arange(c0, c1)) - rend.base)[0])
     spans = [(p.c0, p.c1) for p in pieces]
     while True:
         for p, (a, b) in zip(pieces, spans):
@@ -669,6 +673,20 @@ def _split_pieces(clip, rend, pieces, chans):
             return pieces, chans
         i = bad[0]
         del pieces[i], chans[i], spans[i]
+        while 0 < i < len(pieces):
+            L, R = pieces[i - 1], pieces[i]
+            (l0, l1), (r0, r1) = spans[i - 1], spans[i]
+            if r0 - l1 <= GAP_UNMATCHED and abs(L.off(r0) - R.off(r0)) <= EDIT_MIN:
+                if (r1 - r0) > (l1 - l0):
+                    L.a, L.b = R.a, R.b
+                L.psr = max(L.psr, R.psr)
+                L.n_win += R.n_win
+                spans[i - 1] = (l0, r1)
+                L.c0, L.c1 = l0, r1
+                del pieces[i], chans[i], spans[i]
+                chans[i - 1] = channel(L)
+            else:
+                break
 
 
 def verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=print) -> dict:
@@ -732,7 +750,7 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
                     verdict="No part of this clip matches the venue's recording.")
         return base
     pieces, chans = _absorb_blips(clip, rend, pieces, chans, channel)
-    pieces, chans = _split_pieces(clip, rend, pieces, chans)
+    pieces, chans = _split_pieces(clip, rend, pieces, chans, channel)
 
     mark("cuts")
     signed = mode != "table"
