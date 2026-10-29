@@ -84,6 +84,65 @@ def cli(*args, env=None) -> tuple[int, dict | None, float]:
     return p.returncode, doc, time.time() - t
 
 
+def make_witness_root(root: str, out: np.ndarray, chunk_s: float = 15.0, first_seq: int = 41,
+                      stream: str = "stage") -> str:
+    """The ingest daemon's layout (wholetake repo): <root>/<stream>/<seq:06d>.wav (16 kHz s16) +
+    .meta.json + .json words. The witness is the venue's speaker output, as a livestream would
+    carry it. Words are energy segments named w<k> (no ASR here): enough to check the mapping."""
+    import soundfile as sf
+    d = os.path.join(root, stream)
+    os.makedirs(d, exist_ok=True)
+    x16 = resample_poly(out, 1, 3)
+    x16 = x16 / (np.max(np.abs(x16)) + 1e-9) * 0.7
+    hop = 160
+    e = np.sqrt(np.mean(x16[:len(x16) // hop * hop].reshape(-1, hop) ** 2, axis=1))
+    on = e > 0.25 * np.median(e[e > np.percentile(e, 60)])
+    segs, k = [], 0
+    while k < len(on):
+        if on[k]:
+            j = k
+            while j < len(on) and on[j] and (j - k) < 40:
+                j += 1
+            if j - k >= 8:
+                segs.append((k * hop / 16000, j * hop / 16000))
+            k = j
+        else:
+            k += 1
+    n = int(chunk_s * 16000)
+    for i, a in enumerate(range(0, len(x16), n)):
+        seq, c = first_seq + i, x16[a:a + n]
+        t0 = a / 16000
+        sf.write(os.path.join(d, f"{seq:06d}.wav"), c, 16000, subtype="PCM_16")
+        words = [{"w": f"w{q}", "s": round(s0 - t0, 2), "e": round(s1 - t0, 2), "p": 0.9}
+                 for q, (s0, s1) in enumerate(segs) if t0 <= 0.5 * (s0 + s1) < t0 + len(c) / 16000]
+        with open(os.path.join(d, f"{seq:06d}.json"), "w") as f:
+            json.dump({"seq": seq, "words": words}, f)
+        with open(os.path.join(d, f"{seq:06d}.meta.json"), "w") as f:
+            json.dump({"seq": seq, "duration_s": round(len(c) / 16000, 3),
+                       "received_utc_unix": T0 + t0 + len(c) / 16000 + 0.5}, f)
+    return root
+
+
+def contract_validator():
+    """The product side's own validator (wholetake repo verdict/detect.py)."""
+    try:
+        from verdict.detect import validate_detection
+    except ImportError:
+        repo = os.environ.get("WT_PRODUCT_REPO")
+        if not repo:
+            return None
+        sys.path.insert(0, repo)
+        from verdict.detect import validate_detection
+    return validate_detection
+
+
+def save16(y: np.ndarray, path: str) -> str:
+    """What the verdict service hands the detector: 16 kHz mono s16 WAV."""
+    import soundfile as sf
+    sf.write(path, resample_poly(y, 1, 3), 16000, subtype="PCM_16")
+    return path
+
+
 RESULTS = []
 
 
@@ -165,9 +224,50 @@ def main(argv=None) -> None:
     rc, d, dt = cli(cw, "-o", J("no_session"), "--venue", empty, "--key-file", kf)
     check("no session for key -> unknown", rc == 0 and required_keys_ok(d) and d["verdict"]["recorded_here"] == "unknown",
           d, dt)
-    p = subprocess.run([sys.executable, "-m", "roomstamp.wt_detect", cw, "--key-file", os.path.join(root, "nokey")],
-                       capture_output=True)
-    check("missing key file -> exit 2", p.returncode == 2, None, 0.0)
+    p = subprocess.run([sys.executable, "-m", "roomstamp.wt_detect", cw, "--layers", "zz"], capture_output=True)
+    check("bad arguments -> exit 2", p.returncode == 2, None, 0.0)
+
+    # C. the product side's contract (CONTRACTS.md): 16 kHz clip, --witness-root, its own validator
+    validate = contract_validator()
+    wroot = make_witness_root(os.path.join(root, "witness_root"), out)
+    c16 = save16(y, os.path.join(root, "hero_16k.wav"))
+    env_c = {"WT_VENUE_DIR": pa, "WT_KEY_FILE": kf}
+    rc, d, dt = cli(c16, "--witness-root", wroot, "--out", J("contract_hero"), env=env_c)
+    err = ""
+    try:
+        validate and validate(d, wroot)
+    except Exception as ex:
+        err = f"validator: {ex}"
+    w, st = (d or {}).get("witness", {}), (d or {}).get("stamp") or {}
+    rm = w.get("removed", [])
+    ok = rc == 0 and not err and validate is not None and d["detector"]["name"] == "wt-detect"         and st.get("present") is True and len(st.get("cuts", [])) == 1 and abs(st["cuts"][0]["removed_s"] - 0.30) <= TOL_CUT         and str(st.get("recorded_at_utc", "")).endswith("Z") and w.get("verdict") == "cut" and w.get("stream") == "stage"         and len(rm) == 1 and rm[0]["seq"] == 42 and abs(rm[0]["src_s"][0] - 5.0) <= 0.15         and {p["seq"] for p in w.get("pieces", [])} == {41, 42} and w.get("transcript_clip")
+    check("contract: 16 kHz clip + witness root, validator OK", ok, d, dt,
+          err or (f"witness={w.get('verdict')} removed={[(r['seq'], r['src_s'], r['words']) for r in rm]} "
+                  f"l1score={st.get('layer1_score')}" if d else "no output"))
+
+    rc, d, dt = cli(c16, "--witness-root", wroot, "--out", J("contract_nokey"),
+                    env={"WT_VENUE_DIR": pa, "WT_KEY_FILE": os.path.join(root, "nokey")})
+    err = ""
+    try:
+        validate and validate(d, wroot)
+    except Exception as ex:
+        err = f"validator: {ex}"
+    check("contract: no venue key -> stamp null, witness still cut", rc == 0 and not err and d["stamp"] is None
+          and d["witness"]["verdict"] == "cut", d, dt, err)
+
+    other = os.path.join(selftest.HERE, "testdata", "witness", "other.wav")
+    if os.path.exists(other):
+        xo = wavio.read(other)[:20 * FS]
+        co = save16(xo / (np.max(np.abs(xo)) + 1e-9) * 0.7, os.path.join(root, "other_16k.wav"))
+        rc, d, dt = cli(co, "--witness-root", wroot, "--out", J("contract_other"), env=env_c)
+        err = ""
+        try:
+            validate and validate(d, wroot)
+        except Exception as ex:
+            err = f"validator: {ex}"
+        check("contract: unrelated speech -> not_found, no stamp", rc == 0 and not err
+              and d["witness"]["verdict"] == "not_found" and d["witness"]["stream"] is None
+              and not (d["stamp"] or {}).get("present"), d, dt, err)
     if a.quick:
         return _done(root, a.keep)
 

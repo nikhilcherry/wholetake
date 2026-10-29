@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.signal import fftconvolve, resample_poly, sosfilt
 
-from . import engine, spec
+from . import contract, engine, spec
 from .session import Session
 from .spec import FS, SOS_L1
 
@@ -56,6 +56,7 @@ FEED_SILENT_DBFS = -80.0      # a feed this quiet was never recorded (mic missin
 MAX_SESSION_TRIES = 3         # same speech can match several sessions; only the stamp decides
 SLICE_MARGIN_S = 30           # feed slice margin around the matched span (cuts remove venue time)
 L2_TIMEOUT_S = 150.0
+BUDGET_S = float(os.environ.get("WT_BUDGET_S", 270))   # the verdict service kills us at 300 s
 L2_MIN_CLIP_S = 8.0           # S3 refuses shorter clips
 L1_TIME_MISMATCH_S = 1.0
 STATUSES = ("present", "likely", "inconclusive", "absent", "too_short", "skipped", "error", "timeout", "pending")
@@ -443,6 +444,8 @@ def _l2_worker(q, kw: dict) -> None:
         from . import blind
         x = np.load(kw["clip_npy"])
         src = blind.RandomnessSource(kw["log"], kw["unanchored"], kw["cache"])
+        if not kw.get("allow_network"):   # contract: zero network; unlogged seconds count as unanchored
+            src.prefetch = lambda *a, **k: None
         r = blind.detect(x, kw["key"], src, kw["t_lo"], kw["t_hi"], seed=kw["seed"])
         q.put(("ok", _jsonable(r)))
     except BaseException:
@@ -450,7 +453,7 @@ def _l2_worker(q, kw: dict) -> None:
 
 
 def run_l2(clip: Clip, sl: SessionLog | None, key: bytes, window: tuple[int, int], work: str,
-           timeout_s: float) -> dict:
+           timeout_s: float, allow_network: bool = False) -> dict:
     t = time.time()
     if clip.duration_s < L2_MIN_CLIP_S:
         return _stage("too_short", "s3", f"blind envelope check needs >= {L2_MIN_CLIP_S:.0f} s of clip")
@@ -460,7 +463,7 @@ def run_l2(clip: Clip, sl: SessionLog | None, key: bytes, window: tuple[int, int
     unanch = sl is not None and not any(s.get("anchored") for s in sl.secs)
     kw = {"clip_npy": npy, "key": key, "log": sl.path if sl else None, "unanchored": unanch,
           "cache": os.path.join(work, "drand_cache.json"), "t_lo": int(window[0]), "t_hi": int(window[1]),
-          "seed": clip.seed}
+          "seed": clip.seed, "allow_network": allow_network}
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
     proc = ctx.Process(target=_l2_worker, args=(q, kw), daemon=True)
@@ -789,7 +792,9 @@ def parse_time(s: str | float | None) -> float | None:
 
 
 def _empty_doc(argv: list[str]) -> dict:
-    return {"schema": SCHEMA, "status": "ok", "error": None, "pending_layers": [],
+    return {"detector": {"name": "wt-detect", "version": VERSION}, "stamp": None,
+            "witness": contract.empty_witness(None),
+            "schema": SCHEMA, "status": "ok", "error": None, "pending_layers": [],
             "verdict": {"recorded_here": "unknown", "integrity": "unknown", "headline": "", "x_reply_text": "",
                         "recorded_at_unix": None, "recorded_at_iso": None, "recorded_at_precision_s": None,
                         "recorded_at_source": None, "tempo_ratio": None, "content_match": False,
@@ -883,10 +888,12 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         session_log: str | None = None, around: str | float | None = None, witness: str | None = None,
         layers: str = "auto", fast: bool = False, confirm: bool = False, merge: bool = False,
         l2_timeout_s: float = L2_TIMEOUT_S, venue_name: str | None = None, max_duration_s: float = MAX_CLIP_S,
+        witness_root: str | None = None, allow_network: bool = False, budget_s: float = BUDGET_S,
         argv: list[str] | None = None) -> dict:
     """Never raises for bad input or a failing stage; returns the detection.json dict (and
     writes it atomically to out_path if given). Raises only for usage errors (key file)."""
     t_run = time.time()
+    deadline = t_run + budget_s
     doc = _empty_doc(argv if argv is not None else [clip_path])
     doc["warnings_base"] = []
     W = doc["warnings_base"]
@@ -897,7 +904,11 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
                 prev = json.load(f)
         except Exception:
             prev = None
-    key = load_key(key_file)
+    try:
+        key = load_key(key_file)
+    except (FileNotFoundError, ValueError) as e:   # no venue key here: witness-only run, stamp = null
+        key = None
+        W.append(f"no_venue_key: {e}; stamp layers skipped")
     try:
         clip = ingest(clip_path, max_duration_s)
     except ClipError as e:
@@ -918,10 +929,10 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     work = os.path.join(tempfile.gettempdir(), "wt-detect", clip.sha256[:16])
     os.makedirs(work, exist_ok=True)
 
-    sessions = find_sessions(venue_dir, vname, W)
-    kid = spec.key_id(key)
+    sessions = find_sessions(venue_dir, vname, W) if key else []
+    kid = spec.key_id(key) if key else None
     t_around = parse_time(around)
-    cands = rank_sessions(sessions, kid, t_around, session_log, clip, W)
+    cands = rank_sessions(sessions, kid, t_around, session_log, clip, W) if key else []
     want = {"l1", "l2", "wt"} if layers == "auto" else set(layers.split(","))
     prevL = (prev or {}).get("layers", {})
     L = doc["layers"]
@@ -960,20 +971,34 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
                                 "candidates": [{"session": s.sid, "env_z": round(min(s.env_z, 999.0), 2)} for s in cands]}
     else:
         doc["verdict"]["venue"] = {"name": vname, "key_id": kid, "session": None, "mode": None}
-        doc["_unknown_reason"] = (f"no stamped session for this venue key ({kid}) in {os.path.abspath(venue_dir)}"
+        doc["_unknown_reason"] = ("no venue key configured" if key is None else
+                                  f"no stamped session for this venue key ({kid}) in {os.path.abspath(venue_dir)}"
                                   + (" near the given time" if t_around is not None else ""))
 
-    if "wt" in want:
+    wsec = contract.empty_witness("no --witness-root")
+    if "wt" in want and witness_root:
+        l1r = L["l1"].get("recorded_at_unix") if L["l1"].get("status") in ("present", "inconclusive") else None
+        try:
+            wsec, s4 = contract.witness_section(clip.x, witness_root, l1r or t_around, W,
+                                                budget_s=max(10.0, deadline - time.time() - 60))
+            L["wt"] = contract.stage_from_s4(s4, wsec)
+        except Exception:
+            L["wt"] = _stage("error", "s4", "witness matcher crashed", error=traceback.format_exc()[-2000:])
+            wsec = contract.empty_witness("witness matcher crashed")
+    elif "wt" in want:
         try:
             L["wt"] = run_wt(clip, witness, W)
         except Exception:
             L["wt"] = _stage("error", "s4", "witness matcher crashed", error=traceback.format_exc()[-2000:])
     elif prevL.get("wt"):
         L["wt"] = prevL["wt"]
+        wsec = (prev or {}).get("witness") or wsec
 
     # L2: applicable? worth it? now or later?
     l2_window = None
-    if sl is not None and not sl.l2_on:
+    if key is None:
+        l2_skip = "no venue key configured"
+    elif sl is not None and not sl.l2_on:
         l2_skip = f"layer 2 is off in this session ({sl.mode} mode)"
     elif clip.duration_s < L2_MIN_CLIP_S:
         l2_skip = None  # run_l2 reports too_short
@@ -1002,7 +1027,8 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         L["l2"] = _stage("pending", "s3", "queued: run again with --layers l2 --merge")
     elif run_l2_now:
         try:
-            L["l2"] = run_l2(clip, sl, key, l2_window, work, l2_timeout_s)
+            L["l2"] = run_l2(clip, sl, key, l2_window, work,
+                             max(5.0, min(l2_timeout_s, deadline - time.time() - 10)), allow_network)
         except Exception:
             L["l2"] = _stage("error", "s3", "L2 crashed", error=traceback.format_exc()[-2000:])
     elif prevL.get("l2"):
@@ -1021,6 +1047,8 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         fuse(doc)
     else:
         doc["proof"] = _proof(None, doc, clip)
+    doc["stamp"] = contract.stamp_section(doc)
+    doc["witness"] = wsec
     return _finish(doc, out_path, t_run)
 
 
@@ -1044,9 +1072,13 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog="wt-detect", description="Roomstamp/Wholetake detector: clip -> detection.json")
     ap.add_argument("clip", help="any audio/video file (wav, m4a, mp4, ogg, mp3, webm...)")
     ap.add_argument("-o", "--out", help="detection.json path (default: print JSON to stdout)")
-    ap.add_argument("--venue", default="logs", help="directory with the emitter's session_*.jsonl + feed_*.wav")
+    ap.add_argument("--witness-root", default=os.environ.get("WT_WITNESS_ROOT"),
+                    help="ingest witness dir <root>/<stream>/<seq>.wav (CONTRACTS.md witness section)")
+    ap.add_argument("--venue", default=os.environ.get("WT_VENUE_DIR", "logs"),
+                    help="directory with the emitter's session_*.jsonl + feed_*.wav (env WT_VENUE_DIR)")
     ap.add_argument("--venue-name", help=f"display name (default '{DEFAULT_VENUE_NAME}')")
-    ap.add_argument("--key-file", default="venue.key", help="venue key (or env ROOMSTAMP_KEY)")
+    ap.add_argument("--key-file", default=os.environ.get("WT_KEY_FILE", "venue.key"),
+                    help="venue key (or env ROOMSTAMP_KEY / WT_KEY_FILE); without one, stamp = null")
     ap.add_argument("--session", help="force one session log")
     ap.add_argument("--around", help="claimed / posted time, unix or ISO (UTC if no zone)")
     ap.add_argument("--witness", help="S4 witness record")
@@ -1056,6 +1088,8 @@ def main(argv=None) -> None:
     ap.add_argument("--merge", action="store_true", help="keep layers from the existing --out file, re-fuse")
     ap.add_argument("--l2-timeout", type=float, default=L2_TIMEOUT_S)
     ap.add_argument("--max-duration", type=float, default=MAX_CLIP_S)
+    ap.add_argument("--allow-network", action="store_true",
+                    help="let L2 fetch drand rounds missing from the log (off: CONTRACTS.md zero-network rule)")
     ap.add_argument("--quiet", action="store_true", help="with -o: print nothing")
     a = ap.parse_args(argv)
     bad = set(a.layers.split(",")) - {"l1", "l2", "wt"} if a.layers != "auto" else set()
@@ -1065,7 +1099,8 @@ def main(argv=None) -> None:
         doc = run(a.clip, out_path=a.out, venue_dir=a.venue, key_file=a.key_file, session_log=a.session,
                   around=a.around, witness=a.witness, layers=a.layers, fast=a.fast, confirm=a.confirm,
                   merge=a.merge, l2_timeout_s=a.l2_timeout, venue_name=a.venue_name,
-                  max_duration_s=a.max_duration, argv=["wt-detect"] + argv)
+                  max_duration_s=a.max_duration, witness_root=a.witness_root, allow_network=a.allow_network,
+                  argv=["wt-detect"] + argv)
     except (FileNotFoundError, ValueError) as e:
         print(f"wt-detect: {e}", file=sys.stderr)
         sys.exit(2)
