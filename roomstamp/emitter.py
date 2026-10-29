@@ -45,13 +45,19 @@ def find_device(spec_: str | int | None, kind: str, hostapi: str | None) -> int 
                     d = h["default_output_device" if kind == "output" else "default_input_device"]
                     return d if d >= 0 else None
         return None
+    if isinstance(spec_, bool):
+        raise SystemExit(f"no {kind} device matching {spec_!r} (host API {hostapi}); run `roomstamp devices`")
+    ch_key = "max_output_channels" if kind == "output" else "max_input_channels"
+    devs = list(sd.query_devices())
     if isinstance(spec_, int) or str(spec_).isdigit():
-        return int(spec_)
+        idx = int(spec_)
+        if 0 <= idx < len(devs) and devs[idx][ch_key] > 0:
+            return idx
+        raise SystemExit(f"no {kind} device matching {spec_!r} (host API {hostapi}); run `roomstamp devices`")
     want = str(spec_).lower()
     apis = sd.query_hostapis()
-    for i, d in enumerate(sd.query_devices()):
-        ch = d["max_output_channels" if kind == "output" else "max_input_channels"]
-        if ch > 0 and want in d["name"].lower() and (not hostapi or hostapi.lower() in apis[d["hostapi"]]["name"].lower()):
+    for i, d in enumerate(devs):
+        if d[ch_key] > 0 and want in d["name"].lower() and (not hostapi or hostapi.lower() in apis[d["hostapi"]]["name"].lower()):
             return i
     raise SystemExit(f"no {kind} device matching {spec_!r} (host API {hostapi}); run `roomstamp devices`")
 
