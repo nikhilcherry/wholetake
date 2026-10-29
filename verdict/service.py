@@ -151,15 +151,16 @@ class VerdictManager:
                 job = json.loads(p.read_text())
             except Exception:
                 continue
-            if not isinstance(job, dict) or "id" not in job:
+            if not isinstance(job, dict) or not job.get("id"):
                 continue
-            jid = job["id"]
+            jid = str(job["id"])
+            job["id"] = jid
             self._jobs[jid] = job
             if job.get("status") in ("queued", "fetching", "detecting", "labeling"):
                 job["status"] = "queued"
                 job["updated_utc"] = utc_now()
                 self._save_job(job)
-                resumable.append((job.get("created_utc", ""), jid))
+                resumable.append((str(job.get("created_utc") or ""), str(jid)))
 
         resumable.sort()
         for _created, jid in resumable:
@@ -298,7 +299,7 @@ class VerdictManager:
     def list_jobs(self, limit: int = 20) -> list[dict]:
         with self._lock:
             items = list(self._jobs.values())
-        items.sort(key=lambda j: j.get("created_utc") or "", reverse=True)
+        items.sort(key=lambda j: str(j.get("created_utc") or ""), reverse=True)
         return [dict(j) for j in items[: max(1, min(limit, 200))]]
 
     def _set_status(self, job_id: str, status: str, **extra) -> None:
