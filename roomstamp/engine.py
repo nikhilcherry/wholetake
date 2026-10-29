@@ -85,7 +85,7 @@ class Stamper:
         self.l2_on = params.mode != "table" and params.l2_delta_db > 0
         self.env_zi = lfilter_zi([ENV_A], [1.0, -(1.0 - ENV_A)]) * 0.0
         self.band_zi = [np.zeros((s.shape[0], 2)) for s in SOS_L2]
-        self.ref_rms = ref_rms if ref_rms is not None else 10.0 ** (REF_INIT_DBFS / 20.0)
+        self.ref_rms = max(float(ref_rms), 1e-20) if ref_rms is not None else 10.0 ** (REF_INIT_DBFS / 20.0)
         self.gain = gain if gain is not None else params.voice_gain
         self.howl_blocks = 0
         self.mute_blocks = 0
@@ -106,7 +106,7 @@ class Stamper:
             self.ref_rms += REF_COEF * (blk_rms - self.ref_rms)
 
         floor = self.p.l1_floor
-        gate = np.clip(floor + (1.0 - floor) * env / (GATE_SPEECH * self.ref_rms), floor, 1.0) if floor < 1.0 else 1.0
+        gate = np.clip(floor + (1.0 - floor) * env / max(GATE_SPEECH * self.ref_rms, 1e-20), floor, 1.0) if floor < 1.0 else 1.0
 
         if self.p.mode == "table":
             amp = 10.0 ** (self.p.l1_dbfs / 20.0)
