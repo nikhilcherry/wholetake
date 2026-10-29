@@ -43,8 +43,28 @@ class StampParams:
     voice_gain: float = 1.0     # pa/file: output gain (voice and stamp together)
 
     def __post_init__(self) -> None:
+        if self.mode not in ("pa", "file", "table"):
+            raise ValueError(f"invalid mode: {self.mode!r}")
         if self.l1_floor is None:
             self.l1_floor = 0.3 if self.mode == "table" else 0.1
+        for name in ("l1_db", "l1_dbfs", "l1_floor", "l2_delta_db", "voice_gain"):
+            val = getattr(self, name)
+            if isinstance(val, bool) or not isinstance(val, (int, float, np.floating)):
+                raise ValueError(f"{name} must be a finite number, got {val!r}")
+            fval = float(val)
+            if not math.isfinite(fval):
+                raise ValueError(f"{name} must be finite, got {val!r}")
+            setattr(self, name, fval)
+        if not (0.0 <= self.l1_floor <= 1.0):
+            raise ValueError(f"l1_floor must be in [0, 1], got {self.l1_floor!r}")
+        if self.l1_db > 200.0:
+            raise ValueError(f"l1_db out of range: {self.l1_db!r}")
+        if self.l1_dbfs > 200.0:
+            raise ValueError(f"l1_dbfs out of range: {self.l1_dbfs!r}")
+        if not (0.0 <= self.l2_delta_db <= 100.0):
+            raise ValueError(f"l2_delta_db must be in [0, 100], got {self.l2_delta_db!r}")
+        if not (0.0 <= self.voice_gain <= 1e6):
+            raise ValueError(f"voice_gain must be in [0, 1e6], got {self.voice_gain!r}")
 
     def as_log(self) -> dict:
         return {k: getattr(self, k) for k in ("mode", "l1_db", "l1_dbfs", "l1_floor", "l2_delta_db", "voice_gain")}
@@ -100,7 +120,7 @@ class Stamper:
             not isinstance(params.voice_gain, bool)
             and isinstance(params.voice_gain, (int, float, np.floating))
             and math.isfinite(float(params.voice_gain))
-            and float(params.voice_gain) > 0.0
+            and float(params.voice_gain) >= 0.0
         ) else 1.0
         if gain is not None and not isinstance(gain, bool):
             try:
