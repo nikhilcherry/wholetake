@@ -812,7 +812,7 @@ def _empty_doc(argv: list[str]) -> dict:
 
 
 def _proof(sl: SessionLog | None, doc: dict, clip: Clip) -> dict:
-    d = {"spec": spec.SPEC_VERSION, "drand_chain": spec.DRAND_CHAIN, "key_id": sl.key_id if sl else None,
+    d = {"spec": spec.SPEC_VERSION, "drand_chain": spec.DRAND_CHAIN, "key_id": sl.key_id if sl else doc["verdict"]["venue"].get("key_id"),
          "session_id": sl.sid if sl else None, "session_log_sha256": _sha256_file(sl.path)[0] if sl else None,
          "feed_wav_sha256": _sha256_file(sl.feed_path)[0] if sl and sl.feed_path else None,
          "clip_sha256": clip.sha256, "normalized_pcm_sha256": clip.pcm_sha256,
