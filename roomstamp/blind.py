@@ -346,6 +346,7 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
     if clip.ndim > 1:
         clip = clip.mean(axis=-1)
     n_null = max(2, int(n_null))
+    t_lo, t_hi = int(t_lo), int(t_hi)
     dur = len(clip) / FS
     if dur < MIN_CLIP_S:
         return {"verdict": "too short", "present": False, "clip_s": round(dur, 1),
