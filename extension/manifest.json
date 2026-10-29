@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Wholetake Clip Verifier",
+  "version": "0.1.0",
+  "description": "Check audio/video clips against Wholetake witness records and Roomstamp acoustic watermarks.",
+  "permissions": [
+    "contextMenus",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_title": "Check this clip with Wholetake",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon.svg",
+      "48": "icons/icon.svg",
+      "128": "icons/icon.svg"
+    }
+  },
+  "icons": {
+    "16": "icons/icon.svg",
+    "48": "icons/icon.svg",
+    "128": "icons/icon.svg"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "wholetake@example.org",
+      "strict_min_version": "109.0"
+    }
+  }
+}
