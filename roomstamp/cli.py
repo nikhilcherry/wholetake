@@ -90,14 +90,21 @@ def read_log(path: str) -> tuple[dict, dict[int, dict]]:
     the next one sharing it; the verifier must reproduce exactly that."""
     header, secs = None, {}
     with open(path, encoding="utf-8") as f:
-        for line in f:
+        lines = [line for line in f if line.strip()]
+    for i, line in enumerate(lines):
+        try:
             r = json.loads(line)
-            if r["type"] == "session":
-                header = r
-                if r.get("warmup"):
-                    secs[r["warmup"]["t"]] = r["warmup"]
-            elif r["type"] == "sec":
-                secs[r["t"]] = r
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:
+                print(f"warning: ignoring truncated final line in {path}", file=sys.stderr)
+                break
+            raise
+        if r["type"] == "session":
+            header = r
+            if r.get("warmup"):
+                secs[r["warmup"]["t"]] = r["warmup"]
+        elif r["type"] == "sec":
+            secs[r["t"]] = r
     return header, secs
 
 
