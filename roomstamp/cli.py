@@ -101,10 +101,20 @@ def read_log(path: str) -> tuple[dict, dict[int, dict]]:
     return header, secs
 
 
+def _parse_randomness(val: object) -> bytes | None:
+    if not isinstance(val, str) or len(val) != 64:
+        return None
+    try:
+        b = bytes.fromhex(val)
+    except ValueError:
+        return None
+    return b if len(b) == 32 else None
+
+
 def log_randomness(secs: dict[int, dict]):
     def lookup(t):
         r = secs.get(t)
-        return bytes.fromhex(r["randomness"]) if r and r.get("anchored") and r.get("randomness") else None
+        return _parse_randomness(r.get("randomness")) if r and r.get("anchored") else None
     return lookup
 
 
@@ -118,15 +128,16 @@ def check_drand(secs: dict[int, dict], ts) -> str:
         if not (r and r.get("anchored")):
             continue
         rnd = spec.round_for(t)
-        if r.get("round") != rnd:
+        logged_r = _parse_randomness(r.get("randomness"))
+        if r.get("round") != rnd or logged_r is None:
             bad += 1
             continue
         if rnd not in seen:
             d = fetch_round(rnd)
-            seen[rnd] = d["randomness"] if d else None
+            seen[rnd] = _parse_randomness(d.get("randomness")) if d else None
         if seen[rnd] is None:
             unreachable += 1
-        elif seen[rnd] == r["randomness"]:
+        elif seen[rnd] == logged_r:
             ok += 1
         else:
             bad += 1

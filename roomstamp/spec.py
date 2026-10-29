@@ -89,8 +89,9 @@ def key_id(key: bytes) -> str:
 
 def second_seed(key: bytes, t: int, randomness: bytes | None) -> bytes:
     r = randomness if randomness is not None else ZERO_R
-    assert len(r) == 32
-    return hmac.new(key, b"roomstamp-v1|" + r + struct.pack("<Q", int(t)), hashlib.sha256).digest()
+    if not isinstance(r, (bytes, bytearray, memoryview)) or len(r) != 32:
+        raise ValueError("randomness must be 32 bytes")
+    return hmac.new(key, b"roomstamp-v1|" + bytes(r) + struct.pack("<Q", int(t)), hashlib.sha256).digest()
 
 
 def anchor_hash(s_t: bytes) -> str:
