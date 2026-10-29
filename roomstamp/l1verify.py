@@ -442,7 +442,7 @@ def warp(xs: list[np.ndarray], pos: np.ndarray, a: int = 8) -> list[np.ndarray]:
 
 def _nperseg(n: int) -> int:
     # >= 2 s frames in halls (r127b), shorter only when the piece itself is short
-    nps = 1 << 16
+    nps = 1 << 17
     while nps > 4096 and nps > n // 2:
         nps //= 2
     return nps
