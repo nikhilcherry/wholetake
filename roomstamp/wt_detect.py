@@ -674,11 +674,24 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
     """Precise sources win; a coarser edit near a precise one is the same edit."""
     warns = []
     rank = {"l1": 0, "wt": 1, "l2": 2}
+    integrity_covered = any(
+        (layers.get(k) or {}).get("integrity_checked") and (layers.get(k) or {}).get("content_match")
+        for k in ("l1", "wt")
+    )
+    l1_st = layers.get("l1") or {}
+    l2_st = layers.get("l2") or {}
+    l1r, l2r = l1_st.get("recorded_at_unix"), l2_st.get("recorded_at_unix")
+    l2_time_mismatch = (
+        l1_st.get("status") in ("present", "inconclusive")
+        and l2_st.get("status") in ("present", "likely")
+        and l1r is not None and l2r is not None
+        and abs(l1r - l2r) > L1_TIME_MISMATCH_S
+    )
     pool = []
     for name in ("l1", "wt", "l2"):
         st = layers.get(name) or {}
         if st.get("status") in ("present", "likely", "inconclusive", "absent") and st.get("edits"):
-            if name == "l2" and st.get("status") not in ("present", "likely"):
+            if name == "l2" and (st.get("status") not in ("present", "likely") or integrity_covered or l2_time_mismatch):
                 continue
             if name in ("l1", "wt") and not st.get("content_match"):
                 continue
@@ -760,8 +773,13 @@ def fuse(doc: dict) -> dict:
             rec, prec, src = st["recorded_at_unix"], p, k
             break
     l1r, l2r = (L.get("l1") or {}).get("recorded_at_unix"), (L.get("l2") or {}).get("recorded_at_unix")
-    if s["l1"] in ("present", "inconclusive") and s["l2"] in ("present", "likely") and l1r and l2r \
-            and abs(l1r - l2r) > L1_TIME_MISMATCH_S:
+    l2_time_mismatch = (
+        s["l1"] in ("present", "inconclusive")
+        and s["l2"] in ("present", "likely")
+        and l1r is not None and l2r is not None
+        and abs(l1r - l2r) > L1_TIME_MISMATCH_S
+    )
+    if l2_time_mismatch:
         warns.append(f"l2_time_mismatch: L2 placed the clip {l2r - l1r:+.1f} s from L1; using L1")
     wall = rec
     if rec is not None and doc.get("_wall_offset") is not None:
@@ -867,7 +885,7 @@ def fuse(doc: dict) -> dict:
     v.update({"recorded_here": recorded, "integrity": integrity, "headline": head, "x_reply_text": x,
               "recorded_at_unix": wall, "recorded_at_iso": iso_time(wall) if wall is not None else None,
               "recorded_at_precision_s": prec, "recorded_at_source": src,
-              "tempo_ratio": (L.get("l2") or {}).get("tempo") if s["l2"] in ("present", "likely") else (1.0 if s["l1"] in ("present", "inconclusive") else None),
+              "tempo_ratio": (L.get("l2") or {}).get("tempo") if (s["l2"] in ("present", "likely") and not l2_time_mismatch) else (1.0 if s["l1"] in ("present", "inconclusive") else None),
               "edits": edits, "content_match": bool(content),
               "confidence": {k: s[k] for k in ("l1", "l2", "wt")}})
     doc["pending_layers"] = pending
