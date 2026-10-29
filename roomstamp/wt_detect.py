@@ -49,6 +49,8 @@ DEFAULT_VENUE_NAME = "HH Goa demo stage"
 TZ_NAME, TZ_H = "IST", 5.5
 
 MIN_CLIP_S, MAX_CLIP_S = 2.0, 600.0
+MIN_SR, MAX_SR = 4000, 384000
+MAX_RESAMPLE_FACTOR = 1000
 ENV_HOP = 480                 # 10 ms envelope frames for the coarse session match
 ENV_Z_MIN = 6.0               # envelope peak / robust sigma to accept a session match
 FULL_FEED_MAX_S = 900         # without an envelope match, hand S2 the whole feed only if it's short
@@ -210,6 +212,13 @@ def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
     except Exception:
         x, sr, codec = _decode_ffmpeg(path)
         decoder = "ffmpeg"
+    if sr < MIN_SR or sr > MAX_SR:
+        raise ClipError("DECODE_FAILED", f"unsupported sample rate: {sr} Hz")
+    raw_dur = len(x) / sr
+    if raw_dur < MIN_CLIP_S:
+        raise ClipError("TOO_SHORT", f"clip is {raw_dur:.1f} s; need at least {MIN_CLIP_S:.0f} s")
+    if raw_dur > max_s:
+        raise ClipError("TOO_LONG", f"clip is {raw_dur:.0f} s; limit {max_s:.0f} s (use --max-duration)")
     if not np.all(np.isfinite(x)):
         raise ClipError("DECODE_FAILED", "non-finite audio samples")
     warnings: list[str] = []
@@ -217,11 +226,17 @@ def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
     m = _downmix(x[:, :2], warnings, sr=sr)
     if sr != FS:
         g = int(np.gcd(sr, FS))
-        m = resample_poly(m, FS // g, sr // g)
+        up, down = FS // g, sr // g
+        if max(up, down) > MAX_RESAMPLE_FACTOR:
+            from fractions import Fraction
+            frac = Fraction(FS, sr).limit_denominator(MAX_RESAMPLE_FACTOR)
+            up, down = frac.numerator, frac.denominator
+        if up != down:
+            m = resample_poly(m, up, down)
     dur = len(m) / FS
-    if dur < MIN_CLIP_S:
+    if dur < MIN_CLIP_S and raw_dur < MIN_CLIP_S:
         raise ClipError("TOO_SHORT", f"clip is {dur:.1f} s; need at least {MIN_CLIP_S:.0f} s")
-    if dur > max_s:
+    if dur > max_s and raw_dur > max_s:
         raise ClipError("TOO_LONG", f"clip is {dur:.0f} s; limit {max_s:.0f} s (use --max-duration)")
     rms = float(np.sqrt(np.mean(m * m)))
     if rms < 1e-5:

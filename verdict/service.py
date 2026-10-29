@@ -449,7 +449,9 @@ def make_handler(manager: VerdictManager):
             parsed = urllib.parse.urlsplit(self.path)
             path = parsed.path.rstrip("/")
             if path in ("", "/dashboard"):
-                html_doc = render_dashboard_page(manager)
+                qs = urllib.parse.parse_qs(parsed.query)
+                sel = (qs.get("select") or qs.get("highlight") or [None])[0]
+                html_doc = render_dashboard_page(manager, selected_id=sel)
                 self._send_html(200, html_doc)
                 return
 
