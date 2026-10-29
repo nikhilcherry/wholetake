@@ -106,7 +106,9 @@ def main():
     conv.write_text(json.dumps(history))
     (STATE / f"{task.stem}.last.md").write_text(text)  # full reply, for review-style tasks
 
-    files = dict(re.findall(r"=== FILE: (.+?) ===\n(.*?)\n=== END ===", text, re.S))
+    # A reply that hits CONTINUATION mid-file sometimes restarts that file; a block's body never contains another
+    # FILE marker, so the truncated attempt is skipped and the restarted copy wins.
+    files = dict(re.findall(r"=== FILE: ([^\n]+?) ===\n((?:(?!=== FILE: ).)*?)\n=== END ===", text, re.S))
     for path, body in files.items():
         path = path.strip()
         if path not in owns:

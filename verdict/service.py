@@ -22,6 +22,7 @@ from verdict.fetch import SSRFError, clips_root, fetch, validate_public_url
 from verdict.label import label_cuts
 from verdict.page import render_verdict_page
 from verdict.proofs import build_proofs
+from verdict.restore import RestoreUnavailable, build_context_wav, build_restored, edge_context
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -214,6 +215,65 @@ class VerdictManager:
                 return cand
         return None
 
+    def resolve_restored(self, job: dict) -> tuple[Path, dict]:
+        """Build or return cached (restored_wav_path, manifest) keyed on verdict_id next to clip.wav."""
+        if job.get("status") != "done" or not isinstance(job.get("result"), dict):
+            raise RestoreUnavailable("verdict job is not done")
+        result = job["result"]
+        verdict_id = str(result.get("verdict_id") or job.get("id") or "")
+        wit = (result.get("detection") or {}).get("witness") or {}
+        if wit.get("verdict") != "cut":
+            raise RestoreUnavailable("verdict is not a cut")
+        stream = str(wit.get("stream") or "").strip()
+        removed = wit.get("removed") or []
+        if not stream or not removed:
+            raise RestoreUnavailable("no removed spans to restore")
+
+        clip_wav = self.resolve_clip_wav(job)
+        if clip_wav is None:
+            raise RestoreUnavailable("clip.wav not found")
+
+        if clip_wav.name == "clip.wav" and clip_wav.parent != clips_root():
+            cache_dir = clip_wav.parent
+        else:
+            key = hashlib.sha256(str(job.get("url") or job.get("id") or "").encode("utf-8")).hexdigest()
+            cache_dir = clips_root() / key
+            cache_dir.mkdir(parents=True, exist_ok=True)
+
+        restored_wav = cache_dir / "restored.wav"
+        restored_json = cache_dir / "restored.json"
+
+        with self._lock:
+            if restored_wav.exists() and restored_json.exists():
+                try:
+                    cached_manifest = json.loads(restored_json.read_text())
+                    if isinstance(cached_manifest, dict) and cached_manifest.get("verdict_id") == verdict_id:
+                        return restored_wav, cached_manifest
+                except Exception:
+                    pass
+
+            manifest = build_restored(clip_wav, self.witness_root, stream, removed, restored_wav)
+            manifest["verdict_id"] = verdict_id
+            write_atomic(restored_json, (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+            return restored_wav, manifest
+
+    def resolve_context_wav(self, job: dict, side: str) -> bytes:
+        """Build WAV bytes for 'before' or 'after' witness context around the matched clip pieces."""
+        if side not in ("before", "after"):
+            raise RestoreUnavailable("invalid context side")
+        if job.get("status") != "done" or not isinstance(job.get("result"), dict):
+            raise RestoreUnavailable("verdict job is not done")
+        wit = (job["result"].get("detection") or {}).get("witness") or {}
+        stream = str(wit.get("stream") or "").strip()
+        pieces = wit.get("pieces") or []
+        if not stream or not pieces:
+            raise RestoreUnavailable("no matched witness pieces")
+        ctx = edge_context(self.witness_root, stream, pieces)
+        side_obj = ctx.get(side)
+        if not isinstance(side_obj, dict) or not side_obj.get("audio"):
+            raise RestoreUnavailable(f"no {side} context available")
+        return build_context_wav(self.witness_root, stream, side_obj["audio"])
+
     def list_jobs(self, limit: int = 20) -> list[dict]:
         with self._lock:
             items = list(self._jobs.values())
@@ -321,6 +381,31 @@ def make_handler(manager: VerdictManager):
             self.end_headers()
             self.wfile.write(raw)
 
+        def _send_wav_bytes(self, data: bytes) -> None:
+            """Serve WAV bytes with HTTP Range support so browsers allow <audio> seeking."""
+            m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+            if m and (m.group(1) or m.group(2)):
+                n = len(data)
+                if m.group(1):
+                    start, end = int(m.group(1)), min(int(m.group(2) or n - 1), n - 1)
+                else:
+                    start, end = max(0, n - int(m.group(2))), n - 1
+                if start > end or start >= n:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{n}")
+                    self.end_headers()
+                    return
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{n}")
+                data = data[start : end + 1]
+            else:
+                self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_GET(self) -> None:
             parsed = urllib.parse.urlsplit(self.path)
             path = parsed.path.rstrip("/")
@@ -366,6 +451,11 @@ def make_handler(manager: VerdictManager):
                     if job is None:
                         self._send_html(404, "<!doctype html><html><body><h1>404 Not Found</h1></body></html>")
                         return
+                    if job.get("status") == "done":
+                        try:
+                            manager.resolve_restored(job)
+                        except Exception:
+                            pass
                     html_doc = render_verdict_page(job, manager.witness_root)
                     self._send_html(200, html_doc)
                     return
@@ -387,30 +477,37 @@ def make_handler(manager: VerdictManager):
                     if wav_path is None:
                         self._send_json(404, {"error": "clip.wav not found"}, cors=False)
                         return
-                    data = wav_path.read_bytes()
-                    # Chrome only lets <audio> seek ("Hear the cut") when the server honours byte ranges.
-                    m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
-                    if m and (m.group(1) or m.group(2)):
-                        n = len(data)
-                        if m.group(1):
-                            start, end = int(m.group(1)), min(int(m.group(2) or n - 1), n - 1)
-                        else:
-                            start, end = max(0, n - int(m.group(2))), n - 1
-                        if start > end or start >= n:
-                            self.send_response(416)
-                            self.send_header("Content-Range", f"bytes */{n}")
-                            self.end_headers()
-                            return
-                        self.send_response(206)
-                        self.send_header("Content-Range", f"bytes {start}-{end}/{n}")
-                        data = data[start : end + 1]
+                    self._send_wav_bytes(wav_path.read_bytes())
+                    return
+
+                if len(parts) == 2 and parts[1] in ("restored.wav", "restored.json"):
+                    job = manager.get_job(parts[0])
+                    if job is None or job.get("status") != "done":
+                        self._send_json(404, {"error": "restored audio not available"}, cors=False)
+                        return
+                    try:
+                        r_wav, r_manifest = manager.resolve_restored(job)
+                    except (RestoreUnavailable, ValueError, OSError) as e:
+                        self._send_json(404, {"error": str(e)}, cors=False)
+                        return
+                    if parts[1] == "restored.json":
+                        self._send_json(200, r_manifest, cors=True)
                     else:
-                        self.send_response(200)
-                    self.send_header("Content-Type", "audio/wav")
-                    self.send_header("Accept-Ranges", "bytes")
-                    self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    self.wfile.write(data)
+                        self._send_wav_bytes(r_wav.read_bytes())
+                    return
+
+                if len(parts) == 3 and parts[1] == "context" and parts[2] in ("before.wav", "after.wav"):
+                    job = manager.get_job(parts[0])
+                    if job is None or job.get("status") != "done":
+                        self._send_json(404, {"error": "context audio not available"}, cors=False)
+                        return
+                    side = "before" if parts[2] == "before.wav" else "after"
+                    try:
+                        wav_bytes = manager.resolve_context_wav(job, side)
+                    except (RestoreUnavailable, ValueError, OSError) as e:
+                        self._send_json(404, {"error": str(e)}, cors=False)
+                        return
+                    self._send_wav_bytes(wav_bytes)
                     return
 
             self._send_json(404, {"error": "not found"}, cors=True)

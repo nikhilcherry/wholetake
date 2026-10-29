@@ -1,10 +1,11 @@
 """Self-contained HTML evidence page renderer for Wholetake verdicts (no external requests)."""
 import html
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from verdict.compose import _fmt_mmss
+from verdict.restore import can_restore, edge_context, preview_restored_manifest, select_span_word_indices
 
 BASESCAN_TX_PREFIX = "https://sepolia.basescan.org/tx/"
 
@@ -91,8 +92,13 @@ def _load_chunk_meta(witness_root: Path, stream: str | None, seq: int) -> dict:
         return {}
 
 
-def _load_sentence_highlight(witness_root: Path, stream: str | None, rem: dict) -> tuple[str, str, str]:
-    """Return (before_words, removed_words, after_words) from the witness chunk transcript."""
+def _load_sentence_highlight(
+    witness_root: Path,
+    stream: str | None,
+    rem: dict,
+    manifest_tokens: list[str] | None = None,
+) -> tuple[str, list[str], str]:
+    """Return (before_words, removed_tokens, after_words) from the witness chunk transcript."""
     words_removed = str(rem.get("words") or "").strip()
     seq = rem.get("seq")
     src_s = rem.get("src_s") or [0.0, 0.0]
@@ -103,74 +109,98 @@ def _load_sentence_highlight(witness_root: Path, stream: str | None, rem: dict) 
         wlist = tx.get("words") or []
         if wlist:
             try:
-                hits = [
-                    i
-                    for i, w in enumerate(wlist)
-                    if float(w.get("e", 0.0)) > s0 + 0.02 and float(w.get("s", 0.0)) < s1 - 0.02
-                ]
-                if not hits:
-                    hits = [
-                        i
-                        for i, w in enumerate(wlist)
-                        if float(w.get("e", 0.0)) >= s0 - 0.02 and float(w.get("s", 0.0)) <= s1 + 0.02
-                    ]
+                hits = select_span_word_indices(wlist, s0, s1)
                 if hits:
                     lo = max(0, hits[0] - 8)
                     hi = min(len(wlist), hits[-1] + 1 + 8)
                     before = " ".join(str(w.get("w", "")).strip() for w in wlist[lo : hits[0]]).strip()
-                    mid = " ".join(str(w.get("w", "")).strip() for w in wlist[hits[0] : hits[-1] + 1]).strip()
+                    mid_tokens = (
+                        list(manifest_tokens)
+                        if manifest_tokens
+                        else [str(wlist[i].get("w", "")).strip() for i in hits if str(wlist[i].get("w", "")).strip()]
+                    )
                     after = " ".join(str(w.get("w", "")).strip() for w in wlist[hits[-1] + 1 : hi]).strip()
                     return (
                         (f"… {before} " if lo > 0 and before else (f"{before} " if before else "")),
-                        mid or words_removed,
+                        mid_tokens or ([t for t in words_removed.split(" ") if t] if words_removed else []),
                         (f" {after} …" if hi < len(wlist) and after else (f" {after}" if after else "")),
                     )
             except Exception:
                 pass
-    return ("… ", words_removed, " …")
+    fallback_tokens = list(manifest_tokens) if manifest_tokens else ([t for t in words_removed.split(" ") if t] if words_removed else [])
+    return ("… ", fallback_tokens, " …")
 
 
-def _quote_wall_span(witness_root: Path, stream: str | None, rem: dict) -> str:
-    """Return 'chunk #4 · 18:54:00–18:54:11 UTC' if chunk timestamps exist, else 'chunk #4'."""
+def _quote_wall_span(witness_root: Path, stream: str | None, rem: dict, proofs: list[dict] | None = None) -> str:
+    """Return 'chunk #4 · received 18:54:11 UTC' using only pinned receipt time (never start_utc_est)."""
     seq = rem.get("seq")
     seq_label = f"chunk #{seq}" if seq is not None else "record"
-    if not stream or not isinstance(seq, int):
+    if not isinstance(seq, int):
         return seq_label
 
-    tx = _load_chunk_meta(witness_root, stream, seq)
-    base_dt = _parse_iso(tx.get("start_utc_est") or tx.get("received_utc"))
-    if not base_dt:
+    rec_str: str | None = None
+    if stream:
+        tx = _load_chunk_meta(witness_root, stream, seq)
+        if isinstance(tx.get("received_utc"), str):
+            rec_str = tx["received_utc"]
+    if not rec_str and proofs:
+        for pr in proofs:
+            if isinstance(pr, dict) and pr.get("seq") == seq and isinstance(pr.get("chunk_received_utc"), str):
+                rec_str = pr["chunk_received_utc"]
+                break
+
+    rec_dt = _parse_iso(rec_str)
+    if not rec_dt:
         return seq_label
+    return f"{seq_label} · received {rec_dt.strftime('%H:%M:%S')} UTC"
 
-    src_s = rem.get("src_s") or [0.0, 0.0]
-    s0, s1 = float(src_s[0]), float(src_s[1])
-    t_lo, t_hi = s0, s1
 
-    wlist = tx.get("words") or []
-    if wlist:
-        try:
-            hits = [
-                i
-                for i, w in enumerate(wlist)
-                if float(w.get("e", 0.0)) > s0 + 0.02 and float(w.get("s", 0.0)) < s1 - 0.02
-            ]
-            if not hits:
-                hits = [
-                    i
-                    for i, w in enumerate(wlist)
-                    if float(w.get("e", 0.0)) >= s0 - 0.02 and float(w.get("s", 0.0)) <= s1 + 0.02
-                ]
-            if hits:
-                lo = max(0, hits[0] - 8)
-                hi = min(len(wlist), hits[-1] + 1 + 8)
-                t_lo = float(wlist[lo].get("s", s0))
-                t_hi = float(wlist[hi - 1].get("e", s1))
-        except Exception:
-            pass
+def _fmt_stop_reason(stops: dict | None) -> str:
+    if not isinstance(stops, dict):
+        return ""
+    kind = stops.get("kind")
+    if kind == "stream_start":
+        return "stream started here"
+    if kind == "live_edge":
+        return "live edge"
+    if kind == "gap":
+        dt_from = _parse_iso(stops.get("from_utc"))
+        dt_to = _parse_iso(stops.get("to_utc"))
+        if dt_from and dt_to:
+            return f"witness gap {dt_from.strftime('%H:%M:%S')}–{dt_to.strftime('%H:%M:%S')} UTC"
+        return "witness gap"
+    return ""
 
-    dt0 = base_dt + timedelta(seconds=max(0.0, t_lo))
-    dt1 = base_dt + timedelta(seconds=max(t_lo, t_hi))
-    return f"{seq_label} · {dt0.strftime('%H:%M:%S')}–{dt1.strftime('%H:%M:%S')} UTC"
+
+def _render_context_drawer(job_id: str, side: str, ctx_side: dict | None) -> str:
+    if not isinstance(ctx_side, dict):
+        return ""
+    words = ctx_side.get("words") or []
+    stops = ctx_side.get("stops")
+    if not words and not stops:
+        return ""
+
+    label = "◀ 15 s before the clip" if side == "before" else "15 s after the clip ▶"
+    words_str = " ".join(str(w.get("w") or "").strip() for w in words if isinstance(w, dict)).strip()
+    stop_str = _fmt_stop_reason(stops)
+
+    play_btn = ""
+    if ctx_side.get("audio_available") and ctx_side.get("audio"):
+        play_btn = (
+            f'<button type="button" class="ctx-play-btn" data-ctx-side="{_esc(side)}" '
+            f'data-ctx-src="/v/{_esc(job_id)}/context/{_esc(side)}.wav">▶ Play {_esc(side)}</button>'
+        )
+
+    stop_html = f'<span class="ctx-stop-note">({_esc(stop_str)})</span>' if stop_str else ""
+    body_text = f"“{_esc(words_str)}”" if words_str else '<span class="ctx-empty">No words in window</span>'
+    return (
+        f'<details class="context-drawer context-{_esc(side)}">'
+        f"<summary><span>{_esc(label)}</span>{stop_html}</summary>"
+        '<div class="context-drawer-body">'
+        f'<div class="context-words">{body_text}</div>'
+        f"{play_btn}"
+        "</div></details>"
+    )
 
 
 def _plain_english_summary(vkind: str, pieces: list[dict], removed: list[dict], inserted: list[dict]) -> str:
@@ -212,21 +242,20 @@ def _build_record_time_domain(
     stream: str | None,
     pieces: list[dict],
     removed: list[dict],
-) -> tuple[dict[int, float], dict[int, float], datetime | None, list[int]]:
-    """Compute absolute record offset (seconds from first chunk start) per seq, including neighboring context chunks."""
+) -> tuple[dict[int, float], dict[int, float], list[int]]:
+    """Compute chunk-relative record offsets (seconds from first chunk start) per seq without using start_utc_est."""
     seqs: set[int] = set()
     for item in list(pieces) + list(removed):
         sq = item.get("seq")
         if isinstance(sq, int):
             seqs.add(sq)
     if not seqs:
-        return ({0: 0.0}, {0: 20.0}, None, [0])
+        return ({0: 0.0}, {0: 20.0}, [0])
 
     min_seq = min(seqs)
     max_seq = max(seqs)
     base_seqs = list(range(min_seq, max_seq + 1)) if (max_seq - min_seq) <= 12 else sorted(seqs)
 
-    # Probe adjacent chunk files (min_seq - 1, max_seq + 1) so padding can use real witnessed neighbors if present
     probe_seqs = list(base_seqs)
     if stream:
         if min_seq > 0 and (witness_root / stream / f"{min_seq - 1:06d}.json").exists():
@@ -234,28 +263,44 @@ def _build_record_time_domain(
         if (witness_root / stream / f"{max_seq + 1:06d}.json").exists():
             probe_seqs.append(max_seq + 1)
 
-    meta_by_seq: dict[int, dict] = {sq: _load_chunk_meta(witness_root, stream, sq) for sq in probe_seqs}
-    dt_by_seq: dict[int, datetime] = {}
     dur_by_seq: dict[int, float] = {}
     for sq in probe_seqs:
-        m = meta_by_seq.get(sq) or {}
-        dt = _parse_iso(m.get("start_utc_est") or m.get("received_utc"))
-        if dt:
-            dt_by_seq[sq] = dt
+        m = _load_chunk_meta(witness_root, stream, sq)
         dur_by_seq[sq] = float(m.get("duration_s") or 20.0)
 
     ref_seq = base_seqs[0]
-    ref_dt = dt_by_seq.get(ref_seq)
     default_dur = dur_by_seq.get(ref_seq, 20.0)
 
-    offsets: dict[int, float] = {}
-    for sq in probe_seqs:
-        if ref_dt and sq in dt_by_seq:
-            offsets[sq] = (dt_by_seq[sq] - ref_dt).total_seconds()
+    offsets: dict[int, float] = {ref_seq: 0.0}
+    for sq in sorted(probe_seqs):
+        if sq == ref_seq:
+            continue
+        if sq < ref_seq:
+            cur = 0.0
+            for k in range(ref_seq - 1, sq - 1, -1):
+                cur -= dur_by_seq.get(k, default_dur)
+            offsets[sq] = cur
         else:
-            offsets[sq] = (sq - ref_seq) * default_dur
+            cur = 0.0
+            for k in range(ref_seq, sq):
+                cur += dur_by_seq.get(k, default_dur)
+            offsets[sq] = cur
 
-    return (offsets, dur_by_seq, ref_dt, probe_seqs)
+    return (offsets, dur_by_seq, probe_seqs)
+
+
+def _fmt_chunk_rel_label(abs_t: float, offsets: dict[int, float], all_seqs: list[int]) -> str:
+    """Format an absolute record domain coordinate as chunk-relative ('#4 +1.7 s')."""
+    if not all_seqs:
+        return f"+{abs_t:.1f} s"
+    chosen_sq = all_seqs[0]
+    for sq in sorted(all_seqs):
+        if offsets.get(sq, 0.0) <= abs_t + 1e-6:
+            chosen_sq = sq
+        else:
+            break
+    local_s = max(0.0, abs_t - offsets.get(chosen_sq, 0.0))
+    return f"#{chosen_sq} +{local_s:.1f} s"
 
 
 def _build_two_track_svg(
@@ -266,9 +311,8 @@ def _build_two_track_svg(
     inserted: list[dict],
     offsets: dict[int, float],
     dur_by_seq: dict[int, float],
-    first_dt: datetime | None,
     all_seqs: list[int],
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict], list[dict]]:
     """Build the 880x168 two-track alignment SVG and JS playhead mapping segments."""
     x0, width = 116.0, 744.0
     x1 = x0 + width
@@ -298,7 +342,7 @@ def _build_two_track_svg(
             f'<line id="playheadClip" x1="{x0}" y1="108" x2="{x0}" y2="154" stroke="#F8FAFC" stroke-width="2.5" opacity="0.9"/>'
             "</svg>"
         )
-        return svg, []
+        return svg, [], []
 
     abs_points: list[float] = []
     for p in pieces:
@@ -315,7 +359,6 @@ def _build_two_track_svg(
     piece_min = min(abs_points) if abs_points else 0.0
     piece_max = max(abs_points) if abs_points else dur_s
 
-    # Compute what the witnessed chunks actually cover, and pad the record domain on both sides
     cov_min = min(offsets[sq] for sq in all_seqs) if all_seqs else 0.0
     cov_max = max(offsets[sq] + max(dur_by_seq.get(sq, 20.0), piece_max - offsets[sq]) for sq in all_seqs) if all_seqs else max(20.0, piece_max)
     pad_s = max(4.0, 0.30 * dur_s)
@@ -360,40 +403,29 @@ def _build_two_track_svg(
         '<text x="10" y="144" class="svg-track-sub">Posted audio</text>',
         f'<rect x="{x0}" y="20" width="{width}" height="34" rx="6" fill="#1E293B" stroke="#334155" stroke-width="1.5"/>',
         f'<rect x="{x0}" y="114" width="{width}" height="34" rx="6" fill="#1E293B" stroke="#334155" stroke-width="1.5"/>',
-        # Faint edge fade + "…" on the far ends of the padded record track
         f'<rect x="{x0}" y="21" width="32" height="32" rx="5" fill="url(#edgeFadeLeft)"/>',
         f'<rect x="{x1 - 32}" y="21" width="32" height="32" rx="5" fill="url(#edgeFadeRight)"/>',
         f'<text x="{x0 + 8}" y="41" class="svg-context-dots">…</text>',
         f'<text x="{x1 - 8}" y="41" text-anchor="end" class="svg-context-dots">…</text>',
     ]
 
-    # Chunk boundary ticks on the record track
     for sq in all_seqs:
         off = offsets.get(sq, 0.0)
-        if rec_min <= off <= rec_max:
+        if rec_min < off < rec_max:
             bx = rec_x(off)
             parts.append(
                 f'<line x1="{bx}" y1="16" x2="{bx}" y2="56" stroke="#64748B" stroke-dasharray="2 2" stroke-width="1"/>'
             )
             parts.append(f'<text x="{bx + 3}" y="14" class="svg-chunk-tick">#{_esc(sq)}</text>')
-        elif off < rec_min < off + dur_by_seq.get(sq, 20.0):
-            parts.append(f'<text x="{x0 + 2}" y="14" class="svg-chunk-tick">#{_esc(sq)}</text>')
 
-    # Record axis wall-clock or relative labels for the padded record span
-    if first_dt is not None:
-        start_wall = _fmt_wall_hms(first_dt + timedelta(seconds=rec_min))
-        end_wall = _fmt_wall_hms(first_dt + timedelta(seconds=rec_max))
-    else:
-        start_wall = f"{rec_min:.1f}s"
-        end_wall = f"{rec_max:.1f}s"
-    parts.append(f'<text x="{x0 + 36}" y="14" class="svg-axis">{_esc(start_wall)}</text>')
-    parts.append(f'<text x="{x1}" y="14" text-anchor="end" class="svg-axis">{_esc(end_wall)}</text>')
+    start_rel = _fmt_chunk_rel_label(rec_min, offsets, all_seqs)
+    end_rel = _fmt_chunk_rel_label(rec_max, offsets, all_seqs)
+    parts.append(f'<text x="{x0 + 2}" y="14" class="svg-axis">{_esc(start_rel)}</text>')
+    parts.append(f'<text x="{x1}" y="14" text-anchor="end" class="svg-axis">{_esc(end_rel)}</text>')
 
-    # Clip axis labels
     parts.append(f'<text x="{x0}" y="163" class="svg-axis">0:00</text>')
     parts.append(f'<text x="{x1}" y="163" text-anchor="end" class="svg-axis">{_esc(_fmt_mmss(dur_s))}</text>')
 
-    # Ribbons (~0.16 fill opacity + 1.25px stroke) and matched piece bars with a 2px gap at piece boundaries
     ribbon_fill = "url(#faithfulGrad)" if vkind == "faithful" else "url(#ribbonGrad)"
     ribbon_stroke = "#10B981" if vkind == "faithful" else "#3B82F6"
     bar_fill = "rgba(16, 185, 129, 0.36)" if vkind == "faithful" else "rgba(59, 130, 246, 0.36)"
@@ -440,7 +472,7 @@ def _build_two_track_svg(
         )
         js_segments.append({"c0": cs0, "c1": cs1, "rx0": sx0_raw, "rx1": sx1_raw, "cx0": cx0_raw, "cx1": cx1_raw})
 
-    # Excised spans on RECORD track (with pinch guide lines to CLIP seam)
+    js_cuts: list[dict] = []
     for idx, r in enumerate(removed):
         sq = int(r.get("seq") or 0)
         off = offsets.get(sq, 0.0)
@@ -464,7 +496,7 @@ def _build_two_track_svg(
             f'<line x1="{rx1}" y1="54" x2="{cx}" y2="114" stroke="#F43F5E" stroke-dasharray="3 3" stroke-width="1.4"/>'
         )
         parts.append(
-            f'<g class="cut-callout" data-cut-at="{at_s:.2f}" tabindex="0">'
+            f'<g class="cut-callout" data-cut-at="{at_s:.2f}" data-cut-idx="{idx}" tabindex="0">'
             f"<title>{_esc(tip_text)}</title>"
             f'<rect id="excisedBlock{idx}" x="{rx0}" y="16" width="{rw}" height="42" rx="4" fill="#F43F5E" stroke="#FFE4E6" stroke-width="1.5"/>'
             f'<rect x="{rx0}" y="16" width="{rw}" height="42" rx="4" fill="url(#cutHatch)"/>'
@@ -475,8 +507,17 @@ def _build_two_track_svg(
             f'<text x="{cx}" y="163" text-anchor="middle" class="svg-seam-time">✂ {_esc(_fmt_mmss(at_s))}</text>'
             "</g>"
         )
+        js_cuts.append(
+            {
+                "idx": idx,
+                "at_s": at_s,
+                "dur_s": cut_dur,
+                "rx0": rx0,
+                "rx1": rx1,
+                "cx": cx,
+            }
+        )
 
-    # Inserted / Spliced spans on CLIP track (inverse funnel)
     for ins in inserted:
         if not isinstance(ins, dict):
             continue
@@ -511,7 +552,7 @@ def _build_two_track_svg(
         f'<line id="playheadClip" x1="{x0}" y1="108" x2="{x0}" y2="154" stroke="#F8FAFC" stroke-width="2.5"/>'
     )
     parts.append("</svg>")
-    return "".join(parts), js_segments
+    return "".join(parts), js_segments, js_cuts
 
 
 def _css(vmeta: dict[str, str]) -> str:
@@ -726,6 +767,11 @@ h1.headline {{
 .hear-cut-btn:hover {{
   filter: brightness(1.1);
 }}
+.restore-unavail-note {{
+  font-size: 0.76rem;
+  color: var(--muted);
+  margin-top: 6px;
+}}
 @media (max-width: 760px) {{
   .hero-banner {{
     flex-direction: column;
@@ -775,6 +821,26 @@ h2.sec-title {{
 .sec-sub {{
   font-size: 0.82rem;
   color: var(--muted);
+}}
+.svg-stage {{
+  position: relative;
+}}
+.restored-banner {{
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin-bottom: 6px;
+  border-radius: 6px;
+  background: #4C0519;
+  border: 1px solid #F43F5E;
+  color: #FFE4E6;
+  font-size: 0.82rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}}
+.restored-banner.active {{
+  display: inline-flex;
 }}
 .alignment-svg {{
   width: 100%;
@@ -857,6 +923,10 @@ h2.sec-title {{
 .cut-callout {{
   cursor: pointer;
 }}
+.pulse-excised {{
+  filter: drop-shadow(0 0 8px rgba(244, 63, 94, 0.9));
+  stroke-width: 2.5px !important;
+}}
 .audio-bar {{
   display: flex;
   align-items: center;
@@ -917,6 +987,22 @@ mark.removed.flash-cut {{
   background: rgba(244, 63, 94, 0.5);
   box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.35);
 }}
+.kw-word {{
+  transition: background-color 0.06s ease, color 0.06s ease;
+  border-radius: 3px;
+  padding: 0 1px;
+}}
+.kw-word.kw-spoken {{
+  background: rgba(244, 63, 94, 0.42);
+  color: #FFF1F2;
+  text-decoration: none;
+}}
+.kw-word.kw-active {{
+  background: #F43F5E;
+  color: #FFFFFF;
+  text-decoration: none;
+  font-weight: 700;
+}}
 .cut-tag {{
   display: inline-block;
   font-family: var(--font-mono);
@@ -929,6 +1015,61 @@ mark.removed.flash-cut {{
   color: #FDA4AF;
   vertical-align: middle;
   font-variant-numeric: tabular-nums;
+}}
+details.context-drawer {{
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.86rem;
+}}
+details.context-drawer summary {{
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}}
+.ctx-stop-note {{
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-weight: 400;
+}}
+.context-drawer-body {{
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}}
+.context-words {{
+  flex: 1;
+  min-width: 180px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}}
+.ctx-play-btn {{
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}}
+.ctx-play-btn:hover {{
+  border-color: var(--accent-match);
 }}
 .effect-pill {{
   display: inline-block;
@@ -1126,7 +1267,19 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
     label = result.get("label")
     proofs = result.get("proofs") or []
 
-    # Top right caveat / match badge (no duplicate verdict word chip)
+    restore_avail = can_restore(wroot, str(stream) if stream else None, vkind, removed)
+    embedded_manifest: dict | None = None
+    manifest_words_by_cut: dict[int, list[str]] = {}
+    if restore_avail and stream:
+        try:
+            embedded_manifest = preview_restored_manifest(wroot, str(stream), dur_s, removed)
+            for seg in embedded_manifest.get("segments") or []:
+                if seg.get("kind") == "restored":
+                    cidx = int(seg.get("cut_index") or 0)
+                    manifest_words_by_cut[cidx] = [str(w.get("w") or "") for w in (seg.get("words") or [])]
+        except Exception:
+            embedded_manifest = None
+
     badges_html: list[str] = []
     if det_kind == "text-only":
         badges_html.append(
@@ -1140,7 +1293,6 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
     if stamp_obj and stamp_obj.get("present"):
         badges_html.append('<span class="badge">Roomstamp verified</span>')
 
-    # Stream & timestamp line
     stream_display = STREAM_NAMES.get(str(stream), str(stream)) if stream else "No matched stream"
     first_rec_utc = None
     for pr in proofs:
@@ -1156,58 +1308,87 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
 
     plain_h1 = _esc(_plain_english_summary(vkind, pieces, removed, inserted))
 
-    # Action button to hear the first cut seam
     hear_btn_html = ""
     if removed:
         first_at = max(0.0, min(dur_s, float(removed[0].get("after_clip_s") or 0.0)))
         seek_to = max(0.0, round(first_at - 2.5, 2))
-        hear_btn_html = (
-            f'<button type="button" class="hear-cut-btn" id="hearCutBtn" '
-            f'data-seek="{seek_to}" data-cut="{first_at:.2f}">'
-            f"▶ Hear the cut ({_esc(_fmt_mmss(first_at))})</button>"
-        )
+        if restore_avail:
+            hear_btn_html = (
+                f'<button type="button" class="hear-cut-btn" id="hearCutBtn" '
+                f'data-restore="1" data-seek="{seek_to}" data-cut="{first_at:.2f}">'
+                f"▶ Hear what they cut</button>"
+            )
+        else:
+            hear_btn_html = (
+                f'<button type="button" class="hear-cut-btn" id="hearCutBtn" '
+                f'data-restore="0" data-seek="{seek_to}" data-cut="{first_at:.2f}">'
+                f"▶ Hear the cut ({_esc(_fmt_mmss(first_at))})</button>"
+            )
 
-    # Record time domain & Two-Track SVG
-    offsets, dur_by_seq, first_dt, all_seqs = _build_record_time_domain(wroot, stream, pieces, removed)
-    svg_html, js_segments = _build_two_track_svg(
-        vkind, dur_s, pieces, removed, inserted, offsets, dur_by_seq, first_dt, all_seqs
+    offsets, dur_by_seq, all_seqs = _build_record_time_domain(wroot, stream, pieces, removed)
+    svg_html, js_segments, js_cuts = _build_two_track_svg(
+        vkind, dur_s, pieces, removed, inserted, offsets, dur_by_seq, all_seqs
     )
 
-    # Transcript diff section ("What the record says")
+    ctx_info = edge_context(wroot, str(stream) if stream else None, pieces) if stream and pieces else {"before": None, "after": None}
+    before_drawer_html = _render_context_drawer(job_id, "before", ctx_info.get("before"))
+    after_drawer_html = _render_context_drawer(job_id, "after", ctx_info.get("after"))
+
     record_sentences: list[str] = []
     for idx, r in enumerate(removed):
         src_s = r.get("src_s") or [0.0, 0.0]
         cut_dur = max(0.1, round(float(src_s[1]) - float(src_s[0]), 1))
-        before_w, mid_w, after_w = _load_sentence_highlight(wroot, stream, r)
-        quote_header = _quote_wall_span(wroot, stream, r)
+        before_w, mid_tokens, after_w = _load_sentence_highlight(
+            wroot, stream, r, manifest_words_by_cut.get(idx)
+        )
+        quote_header = _quote_wall_span(wroot, stream, r, proofs)
+        token_spans = " ".join(
+            f'<span class="kw-word" data-cut-idx="{idx}" data-word-idx="{wi}">{_esc(tok)}</span>'
+            for wi, tok in enumerate(mid_tokens)
+        )
         record_sentences.append(
             f'<div class="record-quote">'
             f'<div class="quote-meta">{_esc(quote_header)}</div>'
             f'<span>{_esc(before_w)}<span class="cut-tag">✂ −{_esc(f"{cut_dur:.1f}s")}</span>'
-            f'<mark class="removed" id="removedMark{idx}">{_esc(mid_w)}</mark>{_esc(after_w)}</span>'
+            f'<mark class="removed" id="removedMark{idx}">{token_spans}</mark>{_esc(after_w)}</span>'
             f"</div>"
+        )
+
+    unavail_note_html = ""
+    if removed and not restore_avail:
+        unavail_note_html = (
+            '<div class="restore-unavail-note">'
+            "Record audio not on this server: the words come from the hash-chained transcript"
+            "</div>"
         )
 
     if record_sentences:
         record_sec = (
             '<section class="card">'
             '<div class="sec-head"><h2 class="sec-title">What the record says</h2></div>'
+            + before_drawer_html
             + "".join(record_sentences)
+            + unavail_note_html
+            + after_drawer_html
             + "</section>"
         )
     elif vkind == "faithful":
         record_sec = (
             '<section class="card">'
             '<div class="sec-head"><h2 class="sec-title">What the record says</h2></div>'
-            "<p>No words were removed between matched segments of the witnessed record.</p>"
-            "</section>"
+            + before_drawer_html
+            + "<p>No words were removed between matched segments of the witnessed record.</p>"
+            + after_drawer_html
+            + "</section>"
         )
     elif vkind == "spliced":
         record_sec = (
             '<section class="card">'
             '<div class="sec-head"><h2 class="sec-title">What the record says</h2></div>'
-            "<p>This clip joins non-contiguous segments from the witnessed record.</p>"
-            "</section>"
+            + before_drawer_html
+            + "<p>This clip joins non-contiguous segments from the witnessed record.</p>"
+            + after_drawer_html
+            + "</section>"
         )
     else:
         record_sec = (
@@ -1217,11 +1398,12 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
             "</section>"
         )
 
-    # Secondary column: Advisory AI note + Coverage notes
     right_col_cards: list[str] = []
     advisory_items: list[str] = []
     if isinstance(label, dict):
         labels_list = label.get("spans") if isinstance(label.get("spans"), list) else []
+        if not labels_list and (label.get("effect") or label.get("why")):
+            labels_list = [label]
         for item in labels_list:
             if not isinstance(item, dict):
                 continue
@@ -1255,7 +1437,6 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
     else:
         mid_grid_html = f'<div class="mid-grid single">{record_sec}</div>'
 
-    # Chain-of-custody strip + collapsible raw proof table
     proof_rows: list[str] = []
     any_proof_ok = False
     first_tx: str | None = None
@@ -1301,7 +1482,6 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
         )
 
     custody_steps: list[str] = []
-    # Step 1: Witnessed (HH:MM:SS UTC without milliseconds so it never wraps mid-word)
     if proofs and stream:
         rec_dt = _parse_iso(first_rec_utc)
         t_short = _fmt_wall_hms(rec_dt) if rec_dt else (first_rec_utc or "recorded")
@@ -1319,7 +1499,6 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
             "</div>"
         )
 
-    # Step 2: Hash-chained (no duplicate "verified · verified")
     if proofs and any_proof_ok:
         if first_head_hash:
             h_short = f"{first_head_hash[:10]}…" if len(first_head_hash) > 10 else first_head_hash
@@ -1340,7 +1519,6 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
             "</div>"
         )
 
-    # Step 3: Alignment step (honest label per detector_kind)
     n_pieces = len(pieces)
     piece_word = "piece" if n_pieces == 1 else "pieces"
     if det_kind == "text-only":
@@ -1360,7 +1538,6 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
         "</div>"
     )
 
-    # Step 4: Base Anchor
     if first_tx:
         short_tx = f"{first_tx[:10]}…{first_tx[-6:]}" if len(first_tx) > 18 else first_tx
         custody_steps.append(
@@ -1377,7 +1554,6 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
             "</div>"
         )
 
-    # Step 5: Optional Roomstamp step ONLY when detection.stamp is present
     if stamp_obj is not None:
         st_present = bool(stamp_obj.get("present"))
         st_utc = _esc(stamp_obj.get("recorded_at_utc") or ("verified" if st_present else "not detected"))
@@ -1408,18 +1584,106 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
         "</section>"
     )
 
-    # Inline JS for synced dual playhead & "Hear the cut" button
+    restored_audio_html = (
+        f'<audio id="restoredAudio" preload="auto" src="/v/{_esc(job_id)}/restored.wav" style="display:none"></audio>'
+        if restore_avail
+        else ""
+    )
+    context_audio_html = '<audio id="contextAudio" preload="none" style="display:none"></audio>'
+
     first_cut_at = float(removed[0].get("after_clip_s") or -1.0) if removed else -1.0
+    first_cut_dur = (
+        max(0.1, round(float((removed[0].get("src_s") or [0.0, 0.0])[1]) - float((removed[0].get("src_s") or [0.0, 0.0])[0]), 1))
+        if removed
+        else 0.9
+    )
+
     inline_js = f"""
 <script>
 (() => {{
   const audio = document.getElementById("clipAudio");
+  const restoredAudio = document.getElementById("restoredAudio");
+  const contextAudio = document.getElementById("contextAudio");
   const phClip = document.getElementById("playheadClip");
   const phRec = document.getElementById("playheadRec");
   const hearBtn = document.getElementById("hearCutBtn");
+  const banner = document.getElementById("restoredBanner");
   const dur = {dur_s:.4f};
   const segs = {json.dumps(js_segments)};
+  const cuts = {json.dumps(js_cuts)};
   const cutAt = {first_cut_at:.3f};
+  const restoreAvail = {"true" if restore_avail else "false"};
+  const manifestUrl = "/v/{_esc(job_id)}/restored.json";
+  let manifestData = {json.dumps(embedded_manifest)};
+  let manifestPromise = null;
+  let restoredStopAt = null;
+  let restoredRafId = null;
+  let restoredTimerId = null;
+  let restoredMode = false;
+
+  function loadManifest() {{
+    if (manifestData) return Promise.resolve(manifestData);
+    if (!manifestPromise) {{
+      manifestPromise = fetch(manifestUrl)
+        .then(r => r.ok ? r.json() : null)
+        .then(m => {{ if (m) manifestData = m; return m; }})
+        .catch(() => null);
+    }}
+    return manifestPromise;
+  }}
+
+  if (restoreAvail && !manifestData) {{
+    loadManifest();
+  }}
+
+  function mapClipToRecX(t) {{
+    if (segs.length === 0) return 116;
+    let rx = segs[0].rx0;
+    for (const s of segs) {{
+      if (t >= s.c0 && t <= s.c1) {{
+        const frac = (s.c1 > s.c0) ? (t - s.c0) / (s.c1 - s.c0) : 0;
+        rx = s.rx0 + frac * (s.rx1 - s.rx0);
+        break;
+      }} else if (t > s.c1) {{
+        rx = s.rx1;
+      }}
+    }}
+    return rx;
+  }}
+
+  function clearActiveHighlightOnly() {{
+    if (banner) banner.classList.remove("active");
+    for (const el of document.querySelectorAll(".pulse-excised")) {{
+      el.classList.remove("pulse-excised");
+    }}
+    for (const el of document.querySelectorAll(".kw-active")) {{
+      el.classList.remove("kw-active");
+    }}
+  }}
+
+  function resetAllRestoredUI() {{
+    clearActiveHighlightOnly();
+    for (const el of document.querySelectorAll(".kw-spoken")) {{
+      el.classList.remove("kw-spoken");
+    }}
+  }}
+
+  function stopRestoredLoop(resetWords) {{
+    restoredMode = false;
+    if (restoredRafId !== null) {{
+      cancelAnimationFrame(restoredRafId);
+      restoredRafId = null;
+    }}
+    if (restoredTimerId !== null) {{
+      clearInterval(restoredTimerId);
+      restoredTimerId = null;
+    }}
+    if (resetWords) {{
+      resetAllRestoredUI();
+    }} else {{
+      clearActiveHighlightOnly();
+    }}
+  }}
 
   function syncPlayheads() {{
     if (!audio) return;
@@ -1430,16 +1694,7 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
       phClip.setAttribute("x2", cx.toFixed(2));
     }}
     if (phRec && segs.length > 0) {{
-      let rx = segs[0].rx0;
-      for (const s of segs) {{
-        if (t >= s.c0 && t <= s.c1) {{
-          const frac = (s.c1 > s.c0) ? (t - s.c0) / (s.c1 - s.c0) : 0;
-          rx = s.rx0 + frac * (s.rx1 - s.rx0);
-          break;
-        }} else if (t > s.c1) {{
-          rx = s.rx1;
-        }}
-      }}
+      const rx = mapClipToRecX(t);
       phRec.setAttribute("x1", rx.toFixed(2));
       phRec.setAttribute("x2", rx.toFixed(2));
     }}
@@ -1456,24 +1711,215 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
     }}
   }}
 
+  function syncRestoredPlayhead() {{
+    if (!restoredAudio || !manifestData) return;
+    const t = restoredAudio.currentTime || 0;
+    if (restoredStopAt !== null && t >= restoredStopAt) {{
+      restoredStopAt = null;
+      restoredAudio.pause();
+      stopRestoredLoop(true);
+      return;
+    }}
+    const mSegs = manifestData.segments || [];
+    let activeSeg = null;
+    for (const s of mSegs) {{
+      if (t >= s.t0 && t < s.t1) {{
+        activeSeg = s;
+        break;
+      }}
+    }}
+
+    if (!activeSeg || activeSeg.kind !== "restored") {{
+      clearActiveHighlightOnly();
+      for (const s of mSegs) {{
+        if (s.kind === "restored") {{
+          const cIdx = s.cut_index || 0;
+          const words = s.words || [];
+          for (let wi = 0; wi < words.length; wi++) {{
+            const span = document.querySelector('.kw-word[data-cut-idx="' + cIdx + '"][data-word-idx="' + wi + '"]');
+            if (!span) continue;
+            if (t >= words[wi].t1) {{
+              span.classList.add("kw-spoken");
+            }} else {{
+              span.classList.remove("kw-spoken");
+            }}
+          }}
+        }}
+      }}
+      if (activeSeg && activeSeg.kind === "clip" && activeSeg.clip_s) {{
+        const frac = (activeSeg.t1 > activeSeg.t0) ? (t - activeSeg.t0) / (activeSeg.t1 - activeSeg.t0) : 0;
+        const ct = activeSeg.clip_s[0] + frac * (activeSeg.clip_s[1] - activeSeg.clip_s[0]);
+        const cx = 116 + (Math.max(0, Math.min(dur, ct)) / dur) * 744;
+        const rx = mapClipToRecX(ct);
+        if (phClip) {{ phClip.setAttribute("x1", cx.toFixed(2)); phClip.setAttribute("x2", cx.toFixed(2)); }}
+        if (phRec) {{ phRec.setAttribute("x1", rx.toFixed(2)); phRec.setAttribute("x2", rx.toFixed(2)); }}
+      }}
+      return;
+    }}
+
+    const cIdx = activeSeg.cut_index || 0;
+    const cutInfo = cuts[cIdx] || cuts[0];
+    if (cutInfo) {{
+      const frac = (activeSeg.t1 > activeSeg.t0) ? (t - activeSeg.t0) / (activeSeg.t1 - activeSeg.t0) : 0;
+      const rx = cutInfo.rx0 + frac * (cutInfo.rx1 - cutInfo.rx0);
+      if (phClip) {{ phClip.setAttribute("x1", cutInfo.cx.toFixed(2)); phClip.setAttribute("x2", cutInfo.cx.toFixed(2)); }}
+      if (phRec) {{ phRec.setAttribute("x1", rx.toFixed(2)); phRec.setAttribute("x2", rx.toFixed(2)); }}
+      for (const el of document.querySelectorAll(".pulse-excised")) {{
+        if (el.id !== "excisedBlock" + cIdx) el.classList.remove("pulse-excised");
+      }}
+      const blk = document.getElementById("excisedBlock" + cIdx);
+      if (blk) blk.classList.add("pulse-excised");
+      if (banner) {{
+        banner.textContent = "▶ From the record: the " + cutInfo.dur_s.toFixed(1) + " s the clip removed";
+        banner.classList.add("active");
+      }}
+    }}
+
+    const words = activeSeg.words || [];
+    for (let wi = 0; wi < words.length; wi++) {{
+      const w = words[wi];
+      const span = document.querySelector('.kw-word[data-cut-idx="' + cIdx + '"][data-word-idx="' + wi + '"]');
+      if (!span) continue;
+      if (t >= w.t0 && t < w.t1) {{
+        span.classList.add("kw-active");
+        span.classList.remove("kw-spoken");
+      }} else if (t >= w.t1) {{
+        span.classList.remove("kw-active");
+        span.classList.add("kw-spoken");
+      }} else {{
+        span.classList.remove("kw-active");
+        span.classList.remove("kw-spoken");
+      }}
+    }}
+  }}
+
+  function startRestoredLoop() {{
+    stopRestoredLoop(false);
+    restoredMode = true;
+    syncRestoredPlayhead();
+    const rafStep = () => {{
+      if (!restoredMode || !restoredAudio || restoredAudio.paused) return;
+      syncRestoredPlayhead();
+      restoredRafId = requestAnimationFrame(rafStep);
+    }};
+    restoredRafId = requestAnimationFrame(rafStep);
+    restoredTimerId = setInterval(() => {{
+      if (!restoredMode || !restoredAudio || restoredAudio.paused) return;
+      syncRestoredPlayhead();
+    }}, 16);
+  }}
+
+  function beginRestoredAt(manifest, cutIndex) {{
+    if (!restoredAudio || !manifest || !manifest.segments) return;
+    if (audio && !audio.paused) audio.pause();
+    if (contextAudio && !contextAudio.paused) contextAudio.pause();
+    stopRestoredLoop(true);
+    const restoredSegs = manifest.segments.filter(s => s.kind === "restored");
+    const target = restoredSegs.find(s => (s.cut_index || 0) === cutIndex) || restoredSegs[cutIndex] || restoredSegs[0];
+    if (!target) return;
+    const startT = Math.max(0, target.t0 - 0.12 - 2.5);
+    restoredStopAt = Math.min(manifest.duration_s || (target.t1 + 2.62), target.t1 + 0.12 + 2.5);
+
+    const seekAndPlay = () => {{
+      try {{
+        restoredAudio.currentTime = startT;
+      }} catch (_) {{}}
+      syncRestoredPlayhead();
+      if (restoredAudio.paused) {{
+        restoredAudio.play().then(() => {{
+          startRestoredLoop();
+        }}).catch(() => {{}});
+      }} else {{
+        startRestoredLoop();
+      }}
+    }};
+
+    if (restoredAudio.readyState >= 1) {{
+      seekAndPlay();
+    }} else {{
+      restoredAudio.addEventListener("loadedmetadata", seekAndPlay, {{ once: true }});
+      restoredAudio.load();
+    }}
+  }}
+
+  function playRestoredCut(cutIndex) {{
+    if (!restoredAudio) return;
+    if (manifestData) {{
+      beginRestoredAt(manifestData, cutIndex);
+    }} else {{
+      loadManifest().then(m => {{
+        if (m) beginRestoredAt(m, cutIndex);
+      }});
+    }}
+  }}
+
   if (audio) {{
-    audio.addEventListener("play", () => requestAnimationFrame(syncPlayheads));
+    audio.addEventListener("play", () => {{
+      if (restoredAudio && !restoredAudio.paused) restoredAudio.pause();
+      if (contextAudio && !contextAudio.paused) contextAudio.pause();
+      stopRestoredLoop(true);
+      requestAnimationFrame(syncPlayheads);
+    }});
+    audio.addEventListener("playing", () => {{
+      stopRestoredLoop(true);
+      requestAnimationFrame(syncPlayheads);
+    }});
     audio.addEventListener("timeupdate", syncPlayheads);
     audio.addEventListener("seeked", syncPlayheads);
   }}
-  if (hearBtn && audio) {{
+  if (restoredAudio) {{
+    restoredAudio.addEventListener("playing", () => {{
+      startRestoredLoop();
+    }});
+    restoredAudio.addEventListener("timeupdate", () => {{
+      if (restoredMode) syncRestoredPlayhead();
+    }});
+    restoredAudio.addEventListener("seeked", () => {{
+      if (restoredMode) syncRestoredPlayhead();
+    }});
+    restoredAudio.addEventListener("pause", () => {{
+      stopRestoredLoop(true);
+    }});
+    restoredAudio.addEventListener("ended", () => {{
+      stopRestoredLoop(true);
+    }});
+  }}
+  if (hearBtn) {{
     hearBtn.addEventListener("click", () => {{
-      const seek = parseFloat(hearBtn.getAttribute("data-seek") || "0");
-      audio.currentTime = isNaN(seek) ? 0 : seek;
-      audio.play().catch(() => {{}});
+      if (restoreAvail && restoredAudio) {{
+        playRestoredCut(0);
+      }} else if (audio) {{
+        const seek = parseFloat(hearBtn.getAttribute("data-seek") || "0");
+        audio.currentTime = isNaN(seek) ? 0 : seek;
+        audio.play().catch(() => {{}});
+      }}
     }});
   }}
   for (const el of document.querySelectorAll(".cut-callout[data-cut-at]")) {{
     el.addEventListener("click", () => {{
+      const cIdx = parseInt(el.getAttribute("data-cut-idx") || "0", 10);
+      if (restoreAvail && restoredAudio) {{
+        playRestoredCut(isNaN(cIdx) ? 0 : cIdx);
+        return;
+      }}
       if (!audio) return;
       const at = parseFloat(el.getAttribute("data-cut-at") || "0");
       audio.currentTime = Math.max(0, at - 2.0);
       audio.play().catch(() => {{}});
+    }});
+  }}
+  for (const btn of document.querySelectorAll(".ctx-play-btn[data-ctx-src]")) {{
+    btn.addEventListener("click", () => {{
+      if (!contextAudio) return;
+      if (audio && !audio.paused) audio.pause();
+      if (restoredAudio && !restoredAudio.paused) restoredAudio.pause();
+      stopRestoredLoop(true);
+      const src = btn.getAttribute("data-ctx-src");
+      if (src) {{
+        contextAudio.src = src;
+        contextAudio.currentTime = 0;
+        contextAudio.play().catch(() => {{}});
+      }}
     }});
   }}
 }})();
@@ -1509,9 +1955,13 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
         '<h2 class="sec-title">Two-track alignment</h2>'
         '<span class="sec-sub">Witnessed record vs. posted clip</span>'
         "</div>"
+        '<div class="svg-stage">'
+        f'<div id="restoredBanner" class="restored-banner">▶ From the record: the {_esc(f"{first_cut_dur:.1f}")} s the clip removed</div>'
         f"{svg_html}"
+        "</div>"
         '<div class="audio-bar">'
         f'<audio id="clipAudio" class="player" controls preload="metadata" src="/v/{_esc(job_id)}/clip.wav"></audio>'
+        f"{restored_audio_html}{context_audio_html}"
         "</div>"
         "</section>\n"
         f"{mid_grid_html}\n"
