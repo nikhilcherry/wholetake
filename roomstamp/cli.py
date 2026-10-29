@@ -121,7 +121,7 @@ def _parse_randomness(val: object) -> bytes | None:
 def log_randomness(secs: dict[int, dict]):
     def lookup(t):
         r = secs.get(t)
-        return _parse_randomness(r.get("randomness")) if r and r.get("anchored") else None
+        return _parse_randomness(r.get("randomness")) if isinstance(r, dict) and r.get("anchored") else None
     return lookup
 
 
@@ -132,16 +132,17 @@ def check_drand(secs: dict[int, dict], ts) -> str:
     seen = {}
     for t in ts:
         r = secs.get(t)
-        if not (r and r.get("anchored")):
+        if not (isinstance(r, dict) and r.get("anchored")):
             continue
         rnd = spec.round_for(t)
+        logged_rnd = r.get("round")
         logged_r = _parse_randomness(r.get("randomness"))
-        if r.get("round") != rnd or logged_r is None:
+        if rnd <= 0 or type(logged_rnd) is not int or logged_rnd != rnd or logged_r is None:
             bad += 1
             continue
         if rnd not in seen:
             d = fetch_round(rnd)
-            seen[rnd] = _parse_randomness(d.get("randomness")) if d else None
+            seen[rnd] = _parse_randomness(d.get("randomness")) if isinstance(d, dict) else None
         if seen[rnd] is None:
             unreachable += 1
         elif seen[rnd] == logged_r:
