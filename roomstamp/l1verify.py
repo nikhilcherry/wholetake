@@ -107,8 +107,9 @@ def _phat_search(seg: np.ndarray, ref: np.ndarray) -> tuple[int, float]:
     c = _phat_cc(seg, ref)
     if len(c) == 0:
         return 0, 0.0
-    k = int(np.argmax(c))
-    return k, float(c[k] / _sigma(c))
+    ac = np.abs(c)
+    k = int(np.argmax(ac))
+    return k, float(ac[k] / _sigma(c))
 
 
 @dataclass
@@ -126,16 +127,17 @@ def _local(seg: np.ndarray, x8: np.ndarray, c8: int, off: int) -> tuple[int, flo
     if len(c) == 0:
         return lo, 0.0
     sig = _sigma(c)
+    ac = np.abs(c)
     tol8 = max(1, OFF_TOL // DEC)
     exp = (c8 - off) - lo
     s0, s1 = max(0, exp - tol8), min(len(c), exp + tol8 + 1)
     if s1 > s0:
-        ks = s0 + int(np.argmax(c[s0:s1]))
-        ps = float(c[ks] / sig)
+        ks = s0 + int(np.argmax(ac[s0:s1]))
+        ps = float(ac[ks] / sig)
         if ps >= PSR_LOCAL:
             return lo + ks, ps
-    k = int(np.argmax(c))
-    return lo + k, float(c[k] / sig)
+    k = int(np.argmax(ac))
+    return lo + k, float(ac[k] / sig)
 
 
 def align_windows(y8: np.ndarray, x8: np.ndarray, log=None) -> list[Win]:
@@ -242,7 +244,9 @@ def _fine_lag(y: np.ndarray, x: np.ndarray, c: int, f_guess: float, n: int = FS,
     mag = np.abs(X)
     X = np.where(band, X / np.maximum(mag, 0.05 * np.median(mag[band]) + 1e-30), 0.0)
     cc = sfft.irfft(X, nfft)[:2 * span + 1]
-    k = int(np.argmax(cc))
+    k = int(np.argmax(np.abs(cc)))
+    if cc[k] < 0:
+        cc = -cc
     if 0 < k < len(cc) - 1:
         d = cc[k - 1] - 2 * cc[k] + cc[k + 1]
         k = k + (0.5 * (cc[k - 1] - cc[k + 1]) / d if d < 0 else 0.0)
