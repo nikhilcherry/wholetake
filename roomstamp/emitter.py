@@ -218,6 +218,23 @@ class Emitter:
         stream.start()
 
         cur = None   # per-second accumulator
+
+        def handle_item(item):
+            nonlocal cur
+            t, pos, x, out, st, dac_utc, uf, of, state = item
+            feed.write(x)
+            if outw:
+                outw.write(out)
+            if pos == 0:
+                if cur:
+                    self._emit(logf, cur)
+                ps = self.prepared.get(t)
+                cur = {"t": t, "dac_utc": dac_utc, "ks": ps.ks if ps else None, "v": 0.0, "s": 0.0,
+                       "lim": 0, "miss": 0, "uf": 0, "of": 0, "howl": 0, "state": state}
+            if cur:
+                cur["v"] += st.voice_sq; cur["s"] += st.stamp_sq; cur["lim"] += st.limited
+                cur["miss"] += st.missing; cur["uf"] += uf; cur["of"] += of; cur["howl"] += st.howl
+
         try:
             while True:
                 try:
@@ -225,19 +242,7 @@ class Emitter:
                 except queue.Empty:
                     item = None
                 if item is not None:
-                    t, pos, x, out, st, dac_utc, uf, of, state = item
-                    feed.write(x)
-                    if outw:
-                        outw.write(out)
-                    if pos == 0:
-                        if cur:
-                            self._emit(logf, cur)
-                        ps = self.prepared.get(t)
-                        cur = {"t": t, "dac_utc": dac_utc, "ks": ps.ks if ps else None, "v": 0.0, "s": 0.0,
-                               "lim": 0, "miss": 0, "uf": 0, "of": 0, "howl": 0, "state": state}
-                    if cur:
-                        cur["v"] += st.voice_sq; cur["s"] += st.stamp_sq; cur["lim"] += st.limited
-                        cur["miss"] += st.missing; cur["uf"] += uf; cur["of"] += of; cur["howl"] += st.howl
+                    handle_item(item)
                 if self.stopping and self.fade_left == 0:
                     break
                 if duration and self.n >= duration * FS and not self.stopping:
@@ -252,10 +257,7 @@ class Emitter:
             stream.stop()
             stream.close()
             while not self.q.empty():   # flush what was already played
-                t, pos, x, out, st, *_ = self.q.get_nowait()
-                feed.write(x)
-                if outw:
-                    outw.write(out)
+                handle_item(self.q.get_nowait())
             if cur:
                 self._emit(logf, cur)
             self.done.set()
