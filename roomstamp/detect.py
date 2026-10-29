@@ -21,6 +21,8 @@ NPERSEG, HOP = 65536, 16384  # ~1.4 s: longer than a hall reverb tail (r127b)
 
 def _align(rec: np.ndarray, ref: np.ndarray) -> int:
     """Lag (samples) such that rec[lag + n] ~ ref[n]."""
+    if len(rec) == 0 or len(ref) == 0:
+        return 0
     a = sosfilt(SOS_L1, rec)
     b = sosfilt(SOS_L1, ref)
     c = fftconvolve(a, b[::-1], mode="full")
@@ -37,10 +39,14 @@ def _crop(rec: np.ndarray, lag: int, n: int) -> np.ndarray:
 
 def _cancel(y: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Residual of y after removing the best static linear prediction from v."""
-    _, _, Y = stft(y, nperseg=NPERSEG, noverlap=NPERSEG - HOP)
-    _, _, V = stft(v, nperseg=NPERSEG, noverlap=NPERSEG - HOP)
+    if len(y) < 2 or len(v) < 2:
+        return np.asarray(y, dtype=np.float64).copy()
+    nperseg = min(NPERSEG, len(y), len(v))
+    noverlap = min(NPERSEG - HOP, nperseg - max(1, nperseg // 4))
+    _, _, Y = stft(y, nperseg=nperseg, noverlap=noverlap)
+    _, _, V = stft(v, nperseg=nperseg, noverlap=noverlap)
     H = (Y * V.conj()).sum(axis=1, keepdims=True) / ((np.abs(V) ** 2).sum(axis=1, keepdims=True) + 1e-12)
-    _, r = istft(Y - H * V, nperseg=NPERSEG, noverlap=NPERSEG - HOP)
+    _, r = istft(Y - H * V, nperseg=nperseg, noverlap=noverlap)
     return r[:len(y)]
 
 
@@ -91,7 +97,8 @@ def layer2(y: np.ndarray, feed: np.ndarray, signs: np.ndarray, n_null: int = 500
     if n_frames == 0:
         return {"frames": 0, "z": 0.0}
     d = _band_logE(y, n_frames) - _band_logE(feed, n_frames)
-    k = np.ones(11) / 11   # odd length: centred 1.1 s moving average
+    win = min(11, n_frames)
+    k = np.ones(win) / win   # odd length: centred 1.1 s moving average
     for b in range(L2_NBANDS):
         d[:, b] -= np.convolve(d[:, b], k, mode="same")
     d -= d.mean(axis=1, keepdims=True)
@@ -110,6 +117,13 @@ def layer2(y: np.ndarray, feed: np.ndarray, signs: np.ndarray, n_null: int = 500
 
 def detect(rec: np.ndarray, feed: np.ndarray, key: bytes, t_start: int, params: engine.StampParams,
            randomness_for_second=lambda t: None, ref_rms: float | None = None, gain: float | None = None) -> dict:
+    if len(rec) == 0 or len(feed) == 0:
+        result = {"lag_samples": 0, "speech_removed_db": 0.0,
+                  "l1": {"windows": 0, "frac_z5": 0.0, "median_z": 0.0, "clip_z": 0.0, "lag_ms": 0.0},
+                  "seconds": 0, "anchored_seconds": 0}
+        if params.mode != "table" and params.l2_delta_db > 0:
+            result["l2"] = {"frames": 0, "z": 0.0}
+        return result
     out, stamp, secs = engine.render(feed, key, t_start, params, randomness_for_second, return_parts=True,
                                      ref_rms=ref_rms, gain=gain)
     n = len(out)
