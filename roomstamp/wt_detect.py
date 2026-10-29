@@ -54,7 +54,7 @@ ENV_Z_MIN = 6.0               # envelope peak / robust sigma to accept a session
 FULL_FEED_MAX_S = 900         # without an envelope match, hand S2 the whole feed only if it's short
 FEED_SILENT_DBFS = -80.0      # a feed this quiet was never recorded (mic missing)
 MAX_SESSION_TRIES = 3         # same speech can match several sessions; only the stamp decides
-SLICE_MARGIN_S = 30           # feed slice margin around the matched span (cuts remove venue time)
+SLICE_MARGIN_S = 180          # feed slice margin around the matched span (cuts remove venue time)
 L2_TIMEOUT_S = 150.0
 L2_MAX_WINDOW_S = 2400        # cap blind L2 span (~40 min) to keep FFT memory < 1 GB
 BUDGET_S = float(os.environ.get("WT_BUDGET_S", 270))   # the verdict service kills us at 300 s
@@ -251,6 +251,7 @@ class SessionLog:
     # filled by matching
     env_z: float = 0.0
     feed_offset_s: float | None = None   # feed time of clip sample 0 (rough)
+    feed_span_s: tuple[float, float] | None = None
 
     @property
     def mode(self) -> str:
@@ -385,6 +386,20 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
     i = int(np.nanargmax(cv))
     sl.env_z = float((cv[i] - np.median(v)) / sig)
     sl.feed_offset_s = float(lags[i] * ENV_HOP / FS)
+    lo, hi = sl.feed_offset_s, sl.feed_offset_s + len(clip_x) / FS
+    w = min(500, len(ce) // 2)
+    if w >= 200 and len(fe) >= w:
+        for sub, pad in ((ce[:w], 0.0), (ce[-w:], w * ENV_HOP / FS)):
+            if np.std(sub) < 1e-3:
+                continue
+            cs = fftconvolve(fe, sub[::-1], mode="valid")
+            ms = np.median(cs)
+            ss = 1.4826 * np.median(np.abs(cs - ms)) + 1e-12
+            j = int(np.argmax(cs))
+            if (cs[j] - ms) / ss >= ENV_Z_MIN:
+                t_sub = float(j * ENV_HOP / FS)
+                lo, hi = min(lo, t_sub), max(hi, t_sub + pad)
+    sl.feed_span_s = (lo, hi)
 
 
 def _read_feed(path: str, s0: int, s1: int) -> np.ndarray:
@@ -434,8 +449,9 @@ def run_l1(clip: Clip, sl: SessionLog, key: bytes, warnings: list[str]) -> tuple
     n_feed = sf.info(sl.feed_path).frames
     if sl.env_z >= ENV_Z_MIN and sl.feed_offset_s is not None:
         margin = SLICE_MARGIN_S + 0.5 * clip.duration_s
-        s0 = max(0, int(np.floor(sl.feed_offset_s - margin)))
-        s1 = min(int(np.ceil(n_feed / FS)), int(np.ceil(sl.feed_offset_s + clip.duration_s + margin)))
+        lo, hi = sl.feed_span_s or (sl.feed_offset_s, sl.feed_offset_s + clip.duration_s)
+        s0 = max(0, int(np.floor(lo - margin)))
+        s1 = min(int(np.ceil(n_feed / FS)), int(np.ceil(hi + margin)))
     elif n_feed / FS <= FULL_FEED_MAX_S:
         s0, s1 = 0, int(np.ceil(n_feed / FS))
     else:
