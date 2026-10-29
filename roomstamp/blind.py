@@ -81,7 +81,10 @@ class RandomnessSource:
         if cache_path and os.path.exists(cache_path):
             with open(cache_path, encoding="utf-8") as f:
                 for k, v in json.load(f).items():
-                    self.by_round.setdefault(int(k), bytes.fromhex(v) if v is not None else None)
+                    b = bytes.fromhex(v) if v is not None else None
+                    if b is not None and len(b) != 32:
+                        raise ValueError("randomness must be 32 bytes")
+                    self.by_round.setdefault(int(k), b)
 
     def log_span(self) -> tuple[int, int] | None:
         return (min(self.by_sec), max(self.by_sec) + 1) if self.by_sec else None
@@ -121,7 +124,10 @@ def signs_for(key: bytes, t_lo: int, t_hi: int, rand: list[bytes | None]) -> np.
     raw = np.empty((n, L2_FRAMES_PER_SEC * L2_NBANDS), dtype="<u4")
     zero = spec.ZERO_R
     for i, t in enumerate(range(t_lo - 1, t_hi)):
-        s_t = hmac.new(key, b"roomstamp-v1|" + (rand[i] or zero) + struct.pack("<Q", t), hashlib.sha256).digest()
+        r = rand[i] if rand[i] is not None else zero
+        if not isinstance(r, (bytes, bytearray, memoryview)) or len(r) != 32:
+            raise ValueError("randomness must be 32 bytes")
+        s_t = hmac.new(key, b"roomstamp-v1|" + bytes(r) + struct.pack("<Q", int(t)), hashlib.sha256).digest()
         raw[i] = np.frombuffer(hashlib.shake_256(b"L2|" + s_t).digest(4 * L2_NBANDS * L2_FRAMES_PER_SEC), dtype="<u4")
     raw = raw.reshape(n * L2_FRAMES_PER_SEC, L2_NBANDS).astype(np.int64)
     order = np.argsort(-raw, axis=1, kind="stable")
