@@ -915,7 +915,8 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         clip = ingest(clip_path, max_duration_s)
     except ClipError as e:
         doc.update(status="error", error={"code": e.code, "message": str(e)})
-        doc["clip"] = {"path": os.path.abspath(clip_path), "sha256": None, "duration_s": 0.0}
+        doc["clip"] = {"path": os.path.abspath(clip_path), "sha256": None, "bytes": None, "duration_s": 0.0,
+                       "orig_rate": None, "orig_channels": None, "codec": None, "decoder": None}
         doc["_unknown_reason"] = str(e)
         fuse(doc)
         return _finish(doc, out_path, t_run)
@@ -1110,7 +1111,8 @@ def main(argv=None) -> None:
         tb = traceback.format_exc()
         doc = _empty_doc(["wt-detect"] + argv)
         doc.update(status="error", error={"code": "INTERNAL", "message": tb.strip().splitlines()[-1], "trace": tb[-3000:]})
-        doc["clip"] = {"path": os.path.abspath(a.clip), "sha256": None, "duration_s": 0.0}
+        doc["clip"] = {"path": os.path.abspath(a.clip), "sha256": None, "bytes": None, "duration_s": 0.0,
+                       "orig_rate": None, "orig_channels": None, "codec": None, "decoder": None}
         doc["warnings_base"] = []
         doc["_unknown_reason"] = "internal error"
         fuse(doc)
