@@ -822,8 +822,20 @@ def fuse(doc: dict) -> dict:
         else:
             head = f"No room stamp found. This clip can't be tied to {vname}."
     else:
-        reason = doc.get("_unknown_reason") or "no layer could run"
-        head = f"Couldn't check this clip: {reason}."
+        if content:
+            reason = doc.get("_unknown_reason") or "no stamp layer could run"
+            head = f"Words match {vname}" + (f", {when}" if when else "") + f" (room stamp not checked: {reason})."
+            if integrity == "edited" and es:
+                head += f" {es}."
+            elif integrity == "intact":
+                head += f" Complete: nothing removed ({clip_s:.1f} s)."
+            missing = [e["restored_text"] for e in edits if e.get("restored_text")]
+            if missing:
+                quoted = ", ".join(f'"{m}"' for m in missing)
+                head += f" Missing words: {quoted}."
+        else:
+            reason = doc.get("_unknown_reason") or "no layer could run"
+            head = f"Couldn't check this clip: {reason}."
     if pending and recorded != "verified":
         head += " Still checking the backup layer…"
 
