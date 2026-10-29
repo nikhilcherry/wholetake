@@ -332,6 +332,8 @@ def gain_track(x: np.ndarray, p: engine.StampParams, ref_rms: float | None = Non
 
 def l1_carrier(key: bytes, t0: int, n: int, lookup) -> np.ndarray:
     """Keyed layer-1 noise for seconds t0.. (as float32, like the engine uses it)."""
+    if n <= 0:
+        return np.zeros(0, dtype=np.float64)
     seq = engine.KeystreamSequencer(key, t0, 0.0, lookup)
     n_sec = -(-n // FS)
     return np.concatenate([seq.next().l1 for _ in range(n_sec)]).astype(np.float64)[:n]
@@ -339,6 +341,8 @@ def l1_carrier(key: bytes, t0: int, n: int, lookup) -> np.ndarray:
 
 def _voice(x: np.ndarray, key: bytes, t0: int, p: engine.StampParams, lookup, gv: np.ndarray) -> np.ndarray:
     """Vectorised equivalent of the engine's voice path (layer-2 wobble is linear in x)."""
+    if len(x) == 0:
+        return np.zeros(0, dtype=np.float64)
     if p.mode == "table":
         return x.copy()
     v = x.copy()
@@ -355,13 +359,14 @@ def _voice(x: np.ndarray, key: bytes, t0: int, p: engine.StampParams, lookup, gv
 def render_span(feed: np.ndarray, sess: Session, key: bytes, f_lo: float, f_hi: float) -> Render:
     # with the emitter's logged level/gain state the render starts (almost) where it's needed;
     # without it, 10 s of warm-up let the level tracker converge (scale error < 1%)
-    first = max(0, int(np.floor(f_lo / FS)) - 1)
+    max_sec = max(0, (len(feed) - 1) // FS)
+    first = min(max_sec, max(0, int(np.floor(f_lo / FS)) - 1))
     ref_rms, gain = sess.state_at(sess.t_start + first)
     warm = 0 if ref_rms is not None else WARMUP_S
     s0 = max(0, first - warm) * FS
     if warm and s0 > 0:
         ref_rms, gain = sess.state_at(sess.t_start + s0 // FS)
-    s1 = min(len(feed), int(np.ceil(f_hi / FS) + 1) * FS)
+    s1 = min(len(feed), max(s0 + FS, int(np.ceil(f_hi / FS) + 1) * FS))
     x = feed[s0:s1]
     t0 = sess.t_start + s0 // FS
     lookup = sess.lookup()
