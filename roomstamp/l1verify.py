@@ -86,11 +86,10 @@ def _sigma(c: np.ndarray) -> float:
     return 1.4826 * float(np.median(np.abs(c - np.median(c)))) + 1e-20
 
 
-def _phat_search(seg: np.ndarray, ref: np.ndarray) -> tuple[int, float]:
-    """Best start of `seg` inside `ref` (8 kHz, both band-limited). Returns (index, PSR)."""
+def _phat_cc(seg: np.ndarray, ref: np.ndarray) -> np.ndarray:
     n = len(ref)
     if n < len(seg):
-        return 0, 0.0
+        return np.zeros(0)
     nfft = 1 << (n + len(seg) - 1).bit_length()
     S = sfft.rfft(seg * np.hanning(len(seg)), nfft)
     R = sfft.rfft(ref, nfft)
@@ -100,7 +99,14 @@ def _phat_search(seg: np.ndarray, ref: np.ndarray) -> tuple[int, float]:
     mag = np.abs(X)
     floor = 0.05 * np.median(mag[band]) + 1e-30
     X = np.where(band, X / np.maximum(mag, floor), 0.0)
-    c = sfft.irfft(X, nfft)[:n - len(seg) + 1]
+    return sfft.irfft(X, nfft)[:n - len(seg) + 1]
+
+
+def _phat_search(seg: np.ndarray, ref: np.ndarray) -> tuple[int, float]:
+    """Best start of `seg` inside `ref` (8 kHz, both band-limited). Returns (index, PSR)."""
+    c = _phat_cc(seg, ref)
+    if len(c) == 0:
+        return 0, 0.0
     k = int(np.argmax(c))
     return k, float(c[k] / _sigma(c))
 
@@ -116,8 +122,20 @@ class Win:
 def _local(seg: np.ndarray, x8: np.ndarray, c8: int, off: int) -> tuple[int, float]:
     lo = max(0, c8 - off - int(LOCAL_S * FS8))
     hi = min(len(x8), c8 - off + len(seg) + int(LOCAL_S * FS8))
-    k, psr = _phat_search(seg, x8[lo:hi])
-    return lo + k, psr
+    c = _phat_cc(seg, x8[lo:hi])
+    if len(c) == 0:
+        return lo, 0.0
+    sig = _sigma(c)
+    tol8 = max(1, OFF_TOL // DEC)
+    exp = (c8 - off) - lo
+    s0, s1 = max(0, exp - tol8), min(len(c), exp + tol8 + 1)
+    if s1 > s0:
+        ks = s0 + int(np.argmax(c[s0:s1]))
+        ps = float(c[ks] / sig)
+        if ps >= PSR_LOCAL:
+            return lo + ks, ps
+    k = int(np.argmax(c))
+    return lo + k, float(c[k] / sig)
 
 
 def align_windows(y8: np.ndarray, x8: np.ndarray, log=None) -> list[Win]:
@@ -148,17 +166,23 @@ def align_windows(y8: np.ndarray, x8: np.ndarray, log=None) -> list[Win]:
         # long cut can sit under the global bar on table audio)
         k, psr = _phat_search(y8[w.c8:w.c8 + ACQ_WIN], x8)
         if psr >= psr_glob:
-            w.f8, w.psr, cur = k, psr, w.c8 - k
-    # backward pass: voiced windows left unmatched just before a matched one usually belong to
-    # it (the forward pass only learned the new offset some windows after a big jump)
+            f, psr1 = _local(seg, x8, w.c8, w.c8 - k)
+            if abs((w.c8 - f) - (w.c8 - k)) * DEC <= OFF_TOL and psr1 >= PSR_LOCAL:
+                w.f8, w.psr, cur = f, psr1, w.c8 - f
+            else:
+                w.f8, w.psr, cur = k, psr, w.c8 - k
+    # backward pass: voiced windows left unmatched OR locked onto an early repeated phrase
+    # before a longer confirmed piece belong to the piece's offset if it matches locally
     nxt = None
     for w, v in zip(reversed(wins), reversed(voiced)):
-        if w.f8 >= 0:
-            nxt = w.c8 - w.f8
-        elif v and nxt is not None:
+        if not v:
+            continue
+        if nxt is not None and (w.f8 < 0 or abs((w.c8 - w.f8) - nxt) * DEC > OFF_TOL):
             f, psr = _local(y8[w.c8:w.c8 + AWIN], x8, w.c8, nxt)
             if psr >= PSR_LOCAL and abs((w.c8 - f) - nxt) * DEC <= OFF_TOL:
                 w.f8, w.psr = f, psr
+        if w.f8 >= 0:
+            nxt = w.c8 - w.f8
     return wins
 
 
@@ -557,22 +581,47 @@ def _absorb_blips(clip, rend, pieces, chans, channel):
     phrase that the aligner matched elsewhere in the venue (false splice), or a real
     substitution (foreign/other-time audio dropped in, same length). Tell them apart by
     asking whether the neighbours' alignment explains the short piece's audio as well as its
-    own does: a repeat is the same words, so it cancels; a substitution doesn't."""
+    own does: a repeat is the same words, so it cancels; a substitution doesn't.
+    Also check adjacent pieces (incl. clip boundaries and longer repeats) where a dominant
+    neighbour's linear alignment cancels the piece's speech as well as its own does."""
     i = 1
     while i < len(pieces) - 1:
         L, M, R = pieces[i - 1], pieces[i], pieces[i + 1]
-        short = M.n_win <= BLIP_MAX_WIN or (M.c1 - M.c0) <= BLIP_MAX_S * FS
-        if short and abs(L.off(M.c0) - R.off(M.c0)) <= OFF_TOL:
-            # both alignments judged through the long neighbour's channel (a 1 s span is
-            # shorter than a hall's reverb, so its own channel estimate is unreliable)
-            own, nb = _span_cancel_db(clip, rend, M, chans[i - 1], M), _span_cancel_db(clip, rend, M, chans[i - 1], L)
+        if abs(L.off(M.c0) - R.off(M.c0)) <= OFF_TOL:
+            ref_ch = chans[i - 1] if (L.c1 - L.c0) >= (R.c1 - R.c0) else chans[i + 1]
+            own, nb = _span_cancel_db(clip, rend, M, ref_ch, M), _span_cancel_db(clip, rend, M, ref_ch, L)
             if nb >= MATCH_MIN_DB and nb >= own - BLIP_DB:
                 L.c1 = R.c1
-                L.n_win += R.n_win
+                L.n_win += M.n_win + R.n_win
                 pieces[i - 1:i + 2] = [L]
                 chans[i - 1:i + 2] = [channel(L)]
                 continue
         i += 1
+    changed = True
+    while changed and len(pieces) > 1:
+        changed = False
+        for i in range(len(pieces) - 1):
+            L, R = pieces[i], pieces[i + 1]
+            len_l, len_r = L.c1 - L.c0, R.c1 - R.c0
+            pairs = [(L, chans[i], R, True), (R, chans[i + 1], L, False)] if len_l >= len_r else [(R, chans[i + 1], L, False), (L, chans[i], R, True)]
+            for dom, dom_ch, sub, sub_is_right in pairs:
+                f_sub0, f_sub1 = dom.f(sub.c0), dom.f(sub.c1)
+                if f_sub0 < rend.base or f_sub1 > rend.base + len(rend.voice):
+                    continue
+                own = _span_cancel_db(clip, rend, sub, dom_ch, sub)
+                nb = _span_cancel_db(clip, rend, sub, dom_ch, dom)
+                if nb >= MATCH_MIN_DB and nb >= own - BLIP_DB:
+                    if sub_is_right:
+                        dom.c1 = sub.c1
+                    else:
+                        dom.c0 = sub.c0
+                    dom.n_win += sub.n_win
+                    pieces[i:i + 2] = [dom]
+                    chans[i:i + 2] = [channel(dom)]
+                    changed = True
+                    break
+            if changed:
+                break
     return pieces, chans
 
 
@@ -643,8 +692,8 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
                     verdict="No part of this clip matches the venue's recording.")
         return base
 
-    f_lo = min(p.f(p.c0) for p in pieces) - 2 * FS
-    f_hi = max(p.f(p.c1) for p in pieces) + 2 * FS
+    f_lo = min(min(p.f(0), p.f(p.c0)) for p in pieces) - 2 * FS
+    f_hi = max(max(p.f(len(clip)), p.f(p.c1)) for p in pieces) + 2 * FS
     rend = render_span(feed, sess, key, f_lo, f_hi)
     mark("render")
 
