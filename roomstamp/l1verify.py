@@ -245,7 +245,7 @@ def fit_piece(g: list[Win], yb: np.ndarray, xb: np.ndarray) -> Piece:
         if abs(b) > MAX_DRIFT:
             b = 0.0
     a = float(np.median(fine - (1.0 + b) * c))
-    p = Piece(c0=int(g[0].c8 * DEC), c1=int(g[-1].c8 * DEC + FS), a=a, b=b, n_win=len(g),
+    p = Piece(c0=int(g[0].c8 * DEC), c1=min(int(g[-1].c8 * DEC + FS), len(yb)), a=a, b=b, n_win=len(g),
               psr=float(np.median([w.psr for w in g])))
     return p
 
@@ -538,12 +538,15 @@ def _locate_cut(y: np.ndarray, rend: Render, left: Piece, right: Piece, chl: Cha
 def _span_cancel_db(clip, rend, span: "Piece", ch: Channel, model: "Piece") -> float:
     """In-band speech cancelled (dB) over span's clip samples, predicting with `ch` and the
     alignment of `model`."""
+    c0, c1 = max(0, span.c0), min(len(clip), span.c1)
+    if c1 <= c0:
+        return 0.0
     pad = FS
-    nn = np.arange(span.c0 - pad, span.c1 + pad)
+    nn = np.arange(c0 - pad, c1 + pad)
     v, = warp([rend.voice], model.f(nn) - rend.base)
-    pred = ch.predict(v)[pad:pad + span.c1 - span.c0]
-    y = _band(clip[span.c0:span.c1])
-    r = _band(clip[span.c0:span.c1] - pred)
+    pred = ch.predict(v)[pad:pad + c1 - c0]
+    y = _band(clip[c0:c1])
+    r = _band(clip[c0:c1] - pred)
     return float(10 * np.log10(np.sum(y * y) / (np.sum(r * r) + 1e-30)))
 
 
@@ -620,7 +623,7 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     wins = align_windows(y8, x8)
     mark("align")
     groups = group_pieces(wins)
-    pieces = [fit_piece(g, yb, xb) for g in groups]
+    pieces = [p for p in (fit_piece(g, yb, xb) for g in groups) if p.c1 > p.c0]
     mark("fit")
     base = {"mode": mode, "key_id": spec.key_id(key), "session_key_id": sess.key_id, "venue": sess.venue,
             "clip_s": len(clip) / FS, "windows_matched": sum(w.f8 >= 0 for w in wins), "windows": len(wins)}
@@ -635,6 +638,7 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     mark("render")
 
     def channel(p: Piece) -> Channel:
+        p.c0, p.c1 = max(0, p.c0), min(len(clip), p.c1)
         c = np.arange(p.c0, p.c1)
         return Channel(clip[p.c0:p.c1], warp([rend.voice], p.f(c) - rend.base)[0])
 
