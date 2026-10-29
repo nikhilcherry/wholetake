@@ -1,6 +1,7 @@
 """Background drand quicknet fetcher. Never called from the audio thread."""
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -15,13 +16,36 @@ RELAYS = [
 ]
 
 
+def _valid_beacon(d: object, rnd: int | str) -> bool:
+    if not isinstance(d, dict):
+        return False
+    r_num = d.get("round")
+    if isinstance(r_num, bool) or not isinstance(r_num, int) or r_num <= 0:
+        return False
+    if rnd != "latest" and r_num != int(rnd):
+        return False
+    rand_hex = d.get("randomness")
+    sig_hex = d.get("signature")
+    if not isinstance(rand_hex, str) or not isinstance(sig_hex, str):
+        return False
+    try:
+        rand_bytes = bytes.fromhex(rand_hex)
+        sig_bytes = bytes.fromhex(sig_hex)
+    except ValueError:
+        return False
+    if len(rand_bytes) != 32 or not sig_bytes:
+        return False
+    return hashlib.sha256(sig_bytes).digest() == rand_bytes
+
+
 def fetch_round(rnd: int | str, timeout: float = 2.0) -> dict | None:
     """`rnd` is a round number or "latest". Returns {"round", "randomness", "signature"} or None."""
     for base in RELAYS:
         try:
             with urllib.request.urlopen(f"{base}/public/{rnd}", timeout=timeout) as r:
                 d = json.load(r)
-            if "randomness" in d:
+            if _valid_beacon(d, rnd):
+                d["randomness"] = bytes.fromhex(d["randomness"]).hex()
                 return d
         except Exception:
             continue
