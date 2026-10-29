@@ -165,6 +165,8 @@ class KeystreamSequencer:
         self.delta = delta_db
         self.lookup = randomness_for_second
         self.next_t = int(t_start)
+        if self.next_t < 1:
+            raise ValueError(f"t_start must be >= 1, got {t_start}")
         # second t_start-1 is the warm-up predecessor: its seed (layer-1 warm-up) and its
         # signs (layer-2 transition into frame 0) shape the first real second
         t = self.next_t - 1

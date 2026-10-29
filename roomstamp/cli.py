@@ -52,7 +52,7 @@ def cmd_render(a) -> None:
     key = load_key(a.key_file)
     x = wavio.read(a.wav_in)
     p = params_from(a)
-    t0 = a.t_start or int(time.time()) - (len(x) // FS + 10)   # recent past: all rounds published
+    t0 = a.t_start if a.t_start is not None else int(time.time()) - (len(x) // FS + 10)   # recent past: all rounds published
     cache: dict[int, bytes | None] = {}
 
     def lookup(t):
