@@ -1,0 +1,230 @@
+{
+ "schema": "wt-detect/1.0",
+ "status": "ok",
+ "error": null,
+ "pending_layers": [],
+ "verdict": {
+  "recorded_here": "not_verified",
+  "integrity": "intact",
+  "headline": "Words match HH Goa demo stage, 31 Oct 2026, 12:40:08 IST, but the room stamp is missing: this audio wasn't recorded in the room (e.g. re-recorded from a stream).",
+  "x_reply_text": "Words match HH Goa demo stage, 31 Oct 2026, 12:40:08 IST, but the room stamp is missing: this audio wasn't recorded in the room (e.g. re-recorded from a stream).",
+  "recorded_at_unix": 1793430608.009001,
+  "recorded_at_iso": "2026-10-31T12:40:08.009+05:30",
+  "recorded_at_precision_s": 0.01,
+  "recorded_at_source": "l1",
+  "tempo_ratio": 1.0,
+  "content_match": true,
+  "venue": {
+   "name": "HH Goa demo stage",
+   "key_id": "fe6ffdf64ee970bf",
+   "session": "session_1793430600",
+   "mode": "pa"
+  },
+  "edits": [],
+  "confidence": {
+   "l1": "absent",
+   "l2": "absent",
+   "wt": "skipped"
+  }
+ },
+ "clip": {
+  "path": "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\unstamped.wav",
+  "sha256": "8a2eea13896560170639dcdaadde418ab9c4d49b6c2ee82dde7bf410f0c5b3ca",
+  "bytes": 1920044,
+  "duration_s": 20.0,
+  "orig_rate": 48000,
+  "orig_channels": 1,
+  "codec": "wav/pcm_16",
+  "decoder": "soundfile"
+ },
+ "layers": {
+  "l1": {
+   "status": "absent",
+   "impl": "s2",
+   "elapsed_s": 4.79,
+   "summary": "Words match HH Goa demo stage, 31 Oct 12:40:07 IST, but the room stamp is missing (not recorded in the room, or the key is wrong). Continuous: nothing removed.",
+   "z": 2.003259206472245,
+   "p_value": null,
+   "recorded_at_unix": 1793430607.997001,
+   "venue_t_start": 1793430607.997001,
+   "venue_t_end": 1793430627.9970007,
+   "tempo": null,
+   "content_match": true,
+   "edits": [],
+   "detail": {
+    "mode": "pa",
+    "key_id": "fe6ffdf64ee970bf",
+    "session_key_id": "fe6ffdf64ee970bf",
+    "venue": "HH Goa demo stage",
+    "clip_s": 20.0,
+    "windows_matched": 34,
+    "windows": 39,
+    "stamp": "absent",
+    "matched": true,
+    "pieces": [
+     {
+      "clip_start": 0.0,
+      "clip_end": 20.0,
+      "venue_t_start": 1793430607.997001,
+      "venue_t_end": 1793430627.9970007,
+      "offset_samples": -383856.0464850123,
+      "drift_ppm": -0.011926522103244963,
+      "align_windows": 34,
+      "align_psr": 44.44998520768415,
+      "l1_windows": 20,
+      "l1_frac_z5": 0.0,
+      "l1_median_z": -0.6602448294837342,
+      "l1_clip_z": 2.003259206472245,
+      "l1_stamp_lag_ms": -0.08333333333333333,
+      "l1_wrong_key_max_z": 2.202053696917869,
+      "l1_wrong_key_frac_z5": 0.0,
+      "l1_speech_removed_db": 7.276978411555442,
+      "l1_status": "absent"
+     }
+    ],
+    "edits": [],
+    "lead_in_s": 0.0,
+    "unmatched_tail_s": 0.0,
+    "runtime_s": 4.388815402984619,
+    "timings": {
+     "prep": 0.087,
+     "align": 0.468,
+     "fit": 0.325,
+     "render": 1.126,
+     "cuts": 0.65,
+     "score": 1.732
+    },
+    "verdict": "Words match HH Goa demo stage, 31 Oct 12:40:07 IST, but the room stamp is missing (not recorded in the room, or the key is wrong). Continuous: nothing removed."
+   },
+   "error": null,
+   "integrity_checked": true,
+   "lead_in_s": 0.0,
+   "unmatched_tail_s": 0.0
+  },
+  "l2": {
+   "status": "absent",
+   "impl": "s3",
+   "elapsed_s": 13.26,
+   "summary": "ABSENT: recorded at 2026-10-31 07:10:41.74Z (venue time, +-0.02 s), tempo 1.0x, z 4.9 = 1.27 sigma over 50 random keys (beats 45/50, p~0.1) | 12.0 s",
+   "z": 4.9,
+   "p_value": 0.1,
+   "recorded_at_unix": 1793430641.737,
+   "venue_t_start": 1793430641.737,
+   "venue_t_end": 1793430661.737,
+   "tempo": 1.0,
+   "content_match": null,
+   "edits": [],
+   "detail": {
+    "verdict": "absent",
+    "present": false,
+    "layer": "envelope (L2), blind",
+    "recording_start_unix": 1793430641.737,
+    "recording_start_utc": "2026-10-31 07:10:41.74Z",
+    "venue_span_s": 20.0,
+    "clip_s": 20.0,
+    "tempo": 1.0,
+    "reverb_tau_ms": 0.0,
+    "z": 4.9,
+    "sigma_over_null": 1.27,
+    "beats": "45/50",
+    "p_value": 0.1,
+    "null_mean_max": [
+     4.52,
+     5.34
+    ],
+    "stage": 1,
+    "window": [
+     1793430547,
+     1793430699
+    ],
+    "key_id": "fe6ffdf64ee970bf",
+    "elapsed_s": 12.0
+   },
+   "error": null,
+   "sigma_over_null": 1.27,
+   "beats": "45/50",
+   "window": [
+    1793430547,
+    1793430699
+   ]
+  },
+  "wt": {
+   "status": "skipped",
+   "impl": null,
+   "elapsed_s": null,
+   "summary": "no witness record given",
+   "z": null,
+   "p_value": null,
+   "recorded_at_unix": null,
+   "venue_t_start": null,
+   "venue_t_end": null,
+   "tempo": null,
+   "content_match": null,
+   "edits": [],
+   "detail": null,
+   "error": null
+  }
+ },
+ "proof": {
+  "spec": "roomstamp-v1",
+  "drand_chain": "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971",
+  "key_id": "fe6ffdf64ee970bf",
+  "session_id": "session_1793430600",
+  "session_log_sha256": "cbf2f00546050c688010eb49a4060a5d6e89609e7e50bdf2e842fb2ed60d71bf",
+  "feed_wav_sha256": "31d84985681f1249a0688cf7fd9c099bcd50ac8bb2d48f33aa6ebf3318437e07",
+  "clip_sha256": "8a2eea13896560170639dcdaadde418ab9c4d49b6c2ee82dde7bf410f0c5b3ca",
+  "normalized_pcm_sha256": "d9fcf6c5a76fafb43262fbe53dc4c632c5c47bd7462da9ced585238da6b5aa20",
+  "normalized_format": "float32le mono 48000 Hz",
+  "matched_t_range": null,
+  "drand_rounds": [],
+  "anchors": [],
+  "merkle": null
+ },
+ "warnings": [],
+ "run": {
+  "tool": "wt-detect",
+  "version": "0.1.0",
+  "schema": "wt-detect/1.0",
+  "argv": [
+   "wt-detect",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\unstamped.wav",
+   "-o",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\unstamped.json",
+   "--venue",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\venue_pa",
+   "--key-file",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\venue.key",
+   "--quiet"
+  ],
+  "started_unix": 1793229744.175009,
+  "elapsed_s": 18.4,
+  "seed": 334114442,
+  "git_commit": null,
+  "env": {
+   "python": "3.10.11",
+   "platform": "Windows-10-10.0.26200-SP0",
+   "numpy": "2.2.6",
+   "scipy": "1.15.3",
+   "soundfile": "0.14.0",
+   "ffmpeg": "ffmpeg-win-x86_64-v7.1.exe"
+  }
+ },
+ "session_match": {
+  "session": "session_1793430600",
+  "env_z": 7.91,
+  "feed_offset_s": 7.98,
+  "tried": [
+   {
+    "session": "session_1793430600",
+    "env_z": 7.91,
+    "l1": "absent"
+   }
+  ],
+  "candidates": [
+   {
+    "session": "session_1793430600",
+    "env_z": 7.91
+   }
+  ]
+ }
+}

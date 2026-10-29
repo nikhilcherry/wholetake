@@ -1,0 +1,3 @@
+#!/bin/sh
+# wt-detect: clip -> detection.json (see docs/DETECTION_JSON.md)
+cd "$(dirname "$0")" 2>/dev/null; exec python -m roomstamp.wt_detect "$@"

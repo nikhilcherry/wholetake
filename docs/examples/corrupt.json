@@ -1,0 +1,118 @@
+{
+ "schema": "wt-detect/1.0",
+ "status": "error",
+ "error": {
+  "code": "DECODE_FAILED",
+  "message": "Error opening input files: End of file"
+ },
+ "pending_layers": [],
+ "verdict": {
+  "recorded_here": "unknown",
+  "integrity": "unknown",
+  "headline": "Couldn't check this clip: Error opening input files: End of file.",
+  "x_reply_text": "Couldn't check this clip: Error opening input files: End of file.",
+  "recorded_at_unix": null,
+  "recorded_at_iso": null,
+  "recorded_at_precision_s": null,
+  "recorded_at_source": null,
+  "tempo_ratio": null,
+  "content_match": false,
+  "venue": {
+   "name": null,
+   "key_id": null,
+   "session": null,
+   "mode": null
+  },
+  "edits": [],
+  "confidence": {
+   "l1": "skipped",
+   "l2": "skipped",
+   "wt": "skipped"
+  }
+ },
+ "clip": {
+  "path": "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\corrupt.mp4",
+  "sha256": null,
+  "duration_s": 0.0
+ },
+ "layers": {
+  "l1": {
+   "status": "skipped",
+   "impl": null,
+   "elapsed_s": null,
+   "summary": "",
+   "z": null,
+   "p_value": null,
+   "recorded_at_unix": null,
+   "venue_t_start": null,
+   "venue_t_end": null,
+   "tempo": null,
+   "content_match": null,
+   "edits": [],
+   "detail": null,
+   "error": null
+  },
+  "l2": {
+   "status": "skipped",
+   "impl": null,
+   "elapsed_s": null,
+   "summary": "",
+   "z": null,
+   "p_value": null,
+   "recorded_at_unix": null,
+   "venue_t_start": null,
+   "venue_t_end": null,
+   "tempo": null,
+   "content_match": null,
+   "edits": [],
+   "detail": null,
+   "error": null
+  },
+  "wt": {
+   "status": "skipped",
+   "impl": null,
+   "elapsed_s": null,
+   "summary": "",
+   "z": null,
+   "p_value": null,
+   "recorded_at_unix": null,
+   "venue_t_start": null,
+   "venue_t_end": null,
+   "tempo": null,
+   "content_match": null,
+   "edits": [],
+   "detail": null,
+   "error": null
+  }
+ },
+ "proof": null,
+ "warnings": [],
+ "run": {
+  "tool": "wt-detect",
+  "version": "0.1.0",
+  "schema": "wt-detect/1.0",
+  "argv": [
+   "wt-detect",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\corrupt.mp4",
+   "-o",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\corrupt.json",
+   "--venue",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\venue_pa",
+   "--key-file",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\venue.key",
+   "--quiet"
+  ],
+  "started_unix": 1793229700.6961026,
+  "elapsed_s": 0.13,
+  "seed": null,
+  "git_commit": null,
+  "env": {
+   "python": "3.10.11",
+   "platform": "Windows-10-10.0.26200-SP0",
+   "numpy": "2.2.6",
+   "scipy": "1.15.3",
+   "soundfile": "0.14.0",
+   "ffmpeg": "ffmpeg-win-x86_64-v7.1.exe"
+  }
+ }
+}

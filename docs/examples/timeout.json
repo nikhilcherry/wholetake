@@ -1,0 +1,382 @@
+{
+ "schema": "wt-detect/1.0",
+ "status": "ok",
+ "error": null,
+ "pending_layers": [],
+ "verdict": {
+  "recorded_here": "verified",
+  "integrity": "intact",
+  "headline": "Recorded at HH Goa demo stage, 31 Oct 2026, 12:40:08 IST. Complete: nothing removed (20.0 s).",
+  "x_reply_text": "Recorded at HH Goa demo stage, 31 Oct 2026, 12:40:08 IST. Complete: nothing removed (20.0 s).",
+  "recorded_at_unix": 1793430608.0090003,
+  "recorded_at_iso": "2026-10-31T12:40:08.009+05:30",
+  "recorded_at_precision_s": 0.01,
+  "recorded_at_source": "l1",
+  "tempo_ratio": 1.0,
+  "content_match": true,
+  "venue": {
+   "name": "HH Goa demo stage",
+   "key_id": "fe6ffdf64ee970bf",
+   "session": "session_1793430600",
+   "mode": "pa"
+  },
+  "edits": [],
+  "confidence": {
+   "l1": "present",
+   "l2": "timeout",
+   "wt": "skipped"
+  }
+ },
+ "clip": {
+  "path": "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\intact.wav",
+  "sha256": "d92329e462250a2852c2e5ce9141567a2b6825d7fc468f2eb1edc1eee7310c29",
+  "bytes": 1920044,
+  "duration_s": 20.0,
+  "orig_rate": 48000,
+  "orig_channels": 1,
+  "codec": "wav/pcm_16",
+  "decoder": "soundfile"
+ },
+ "layers": {
+  "l1": {
+   "status": "present",
+   "impl": "s2",
+   "elapsed_s": 4.57,
+   "summary": "Recorded at HH Goa demo stage, 31 Oct 12:40:07 IST. Continuous: nothing removed.",
+   "z": 84.41248990513938,
+   "p_value": null,
+   "recorded_at_unix": 1793430607.9970002,
+   "venue_t_start": 1793430607.9970002,
+   "venue_t_end": 1793430627.9970007,
+   "tempo": null,
+   "content_match": true,
+   "edits": [],
+   "detail": {
+    "mode": "pa",
+    "key_id": "fe6ffdf64ee970bf",
+    "session_key_id": "fe6ffdf64ee970bf",
+    "venue": "HH Goa demo stage",
+    "clip_s": 20.0,
+    "windows_matched": 34,
+    "windows": 39,
+    "stamp": "present",
+    "matched": true,
+    "pieces": [
+     {
+      "clip_start": 0.0,
+      "clip_end": 20.0,
+      "venue_t_start": 1793430607.9970002,
+      "venue_t_end": 1793430627.9970007,
+      "offset_samples": -383856.01535080245,
+      "drift_ppm": 0.021200960320655327,
+      "align_windows": 34,
+      "align_psr": 39.6768752896152,
+      "l1_windows": 20,
+      "l1_frac_z5": 0.95,
+      "l1_median_z": 25.52652931323533,
+      "l1_clip_z": 84.41248990513938,
+      "l1_stamp_lag_ms": 0.0,
+      "l1_wrong_key_max_z": 2.3703345001520564,
+      "l1_wrong_key_frac_z5": 0.0,
+      "l1_speech_removed_db": 16.324402619749527,
+      "l1_status": "present"
+     }
+    ],
+    "edits": [],
+    "lead_in_s": 0.0,
+    "unmatched_tail_s": 0.0,
+    "runtime_s": 4.211998701095581,
+    "timings": {
+     "prep": 0.075,
+     "align": 0.441,
+     "fit": 0.327,
+     "render": 1.056,
+     "cuts": 0.617,
+     "score": 1.697
+    },
+    "verdict": "Recorded at HH Goa demo stage, 31 Oct 12:40:07 IST. Continuous: nothing removed."
+   },
+   "error": null,
+   "integrity_checked": true,
+   "lead_in_s": 0.0,
+   "unmatched_tail_s": 0.0
+  },
+  "l2": {
+   "status": "timeout",
+   "impl": "s3",
+   "elapsed_s": 4.2,
+   "summary": "L2 did not finish in 4 s",
+   "z": null,
+   "p_value": null,
+   "recorded_at_unix": null,
+   "venue_t_start": null,
+   "venue_t_end": null,
+   "tempo": null,
+   "content_match": null,
+   "edits": [],
+   "detail": null,
+   "error": null
+  },
+  "wt": {
+   "status": "skipped",
+   "impl": null,
+   "elapsed_s": null,
+   "summary": "no witness record given",
+   "z": null,
+   "p_value": null,
+   "recorded_at_unix": null,
+   "venue_t_start": null,
+   "venue_t_end": null,
+   "tempo": null,
+   "content_match": null,
+   "edits": [],
+   "detail": null,
+   "error": null
+  }
+ },
+ "proof": {
+  "spec": "roomstamp-v1",
+  "drand_chain": "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971",
+  "key_id": "fe6ffdf64ee970bf",
+  "session_id": "session_1793430600",
+  "session_log_sha256": "cbf2f00546050c688010eb49a4060a5d6e89609e7e50bdf2e842fb2ed60d71bf",
+  "feed_wav_sha256": "31d84985681f1249a0688cf7fd9c099bcd50ac8bb2d48f33aa6ebf3318437e07",
+  "clip_sha256": "d92329e462250a2852c2e5ce9141567a2b6825d7fc468f2eb1edc1eee7310c29",
+  "normalized_pcm_sha256": "c93c81601f2e9b1e601e43bd71acc5dfdad323b9e1964d476713e927ed010639",
+  "normalized_format": "float32le mono 48000 Hz",
+  "matched_t_range": [
+   1793430607,
+   1793430628
+  ],
+  "drand_rounds": [
+   33542411,
+   33542412,
+   33542413,
+   33542414,
+   33542415,
+   33542416,
+   33542417
+  ],
+  "anchors": [
+   {
+    "t": 1793430607,
+    "round": 33542411,
+    "anchored": true,
+    "randomness": "0b6f3fd9c1d499f508348c15cd593d05474238d766a4bab88273a05836bfd74c",
+    "anchor": "96ba49f7c5550a5e48a5af83f61fa2dbb8802b61c59f11b87d46f1d3421bc630",
+    "dac_utc": 1793430607.012
+   },
+   {
+    "t": 1793430608,
+    "round": 33542411,
+    "anchored": true,
+    "randomness": "0b6f3fd9c1d499f508348c15cd593d05474238d766a4bab88273a05836bfd74c",
+    "anchor": "db91c3d039e9153e5021c4f221362424010316c438266779af1009c87b53a3b8",
+    "dac_utc": 1793430608.012
+   },
+   {
+    "t": 1793430609,
+    "round": 33542412,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "135937fa82bb12aac2e2d1a76a1b30b9bbc00e87bf11418e390727a94e6bb3b1",
+    "dac_utc": 1793430609.012
+   },
+   {
+    "t": 1793430610,
+    "round": 33542412,
+    "anchored": true,
+    "randomness": "e5adfeda39f7de979bcf800c2c38930fe933b3292487e5e4d359cd6add615da7",
+    "anchor": "26f661eb8826c2b0e41c434764f5f7491f1c8e32d217e5595c1cd1e158e56e0f",
+    "dac_utc": 1793430610.012
+   },
+   {
+    "t": 1793430611,
+    "round": 33542412,
+    "anchored": true,
+    "randomness": "e5adfeda39f7de979bcf800c2c38930fe933b3292487e5e4d359cd6add615da7",
+    "anchor": "a5366c12237baaf877fcd4602cbe146e4c9836d4b5fc717808712a388f865a8b",
+    "dac_utc": 1793430611.012
+   },
+   {
+    "t": 1793430612,
+    "round": 33542413,
+    "anchored": true,
+    "randomness": "723da0ecf5545c6a0c4f3f31e6c59f4f352cd4b632b94e85934ccbaa2bde1dc5",
+    "anchor": "cf68e38545d20622d89c8c7e1d6d5308dec46c38ae741a9604d55d28b1cf15e7",
+    "dac_utc": 1793430612.012
+   },
+   {
+    "t": 1793430613,
+    "round": 33542413,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "c34ca29e8fc2e295c9c7b8f6156e5c084f34b84a7d83cf9106ee2deac0137ada",
+    "dac_utc": 1793430613.012
+   },
+   {
+    "t": 1793430614,
+    "round": 33542413,
+    "anchored": true,
+    "randomness": "723da0ecf5545c6a0c4f3f31e6c59f4f352cd4b632b94e85934ccbaa2bde1dc5",
+    "anchor": "cdf57e48c90a7aee340bff82803465993ada4f85461c772b375f55c58aed2cad",
+    "dac_utc": 1793430614.012
+   },
+   {
+    "t": 1793430615,
+    "round": 33542414,
+    "anchored": true,
+    "randomness": "52f9508f3d1d682e30d5b86a30c2be0afd51ed345bc25a2035d43489d64f1c45",
+    "anchor": "0e48ae270244e8058c33356b7e180bfd41bccf6b99efa69403d73cb7f9c0e26b",
+    "dac_utc": 1793430615.012
+   },
+   {
+    "t": 1793430616,
+    "round": 33542414,
+    "anchored": true,
+    "randomness": "52f9508f3d1d682e30d5b86a30c2be0afd51ed345bc25a2035d43489d64f1c45",
+    "anchor": "6d903fe88883a32f13797a850fc0d3d5f29db75cc2b20e96a10745b35810b3dd",
+    "dac_utc": 1793430616.012
+   },
+   {
+    "t": 1793430617,
+    "round": 33542414,
+    "anchored": true,
+    "randomness": "52f9508f3d1d682e30d5b86a30c2be0afd51ed345bc25a2035d43489d64f1c45",
+    "anchor": "c6638462470c732e2a5a426e7777e67166b79eae1a5150ce1a431c167a51896b",
+    "dac_utc": 1793430617.012
+   },
+   {
+    "t": 1793430618,
+    "round": 33542415,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "5165e720f4e8b29a7464dccd14dda617b47c17465bf3b61373186cfa7b51c9c8",
+    "dac_utc": 1793430618.012
+   },
+   {
+    "t": 1793430619,
+    "round": 33542415,
+    "anchored": true,
+    "randomness": "ed3e0ff63029110fd9a0e71b8f3e14ab3a897c0d917bf2ae50296a4f0d52479a",
+    "anchor": "371ea2db6bb4454401051edf8649531ce0a9450246f1736d1d9d9d0b72d95693",
+    "dac_utc": 1793430619.012
+   },
+   {
+    "t": 1793430620,
+    "round": 33542415,
+    "anchored": true,
+    "randomness": "ed3e0ff63029110fd9a0e71b8f3e14ab3a897c0d917bf2ae50296a4f0d52479a",
+    "anchor": "754159bfaf0f02eb9e9fdf96e4adaff69ffe7cd47119a93d5d0fd5e6233e49c2",
+    "dac_utc": 1793430620.012
+   },
+   {
+    "t": 1793430621,
+    "round": 33542416,
+    "anchored": true,
+    "randomness": "dded97e0cec31211b61f9a6d8e2d1270ca632dc2aad9e4b6f917811b2c043d56",
+    "anchor": "0e65fded15bf7a643874946c59579dd41b35dabf03ade9b0c65aff64733085da",
+    "dac_utc": 1793430621.012
+   },
+   {
+    "t": 1793430622,
+    "round": 33542416,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "aab6c16c5bce7a054eb466dc7e1d3355189fdcbffb33e66863a33607c98c5bbd",
+    "dac_utc": 1793430622.012
+   },
+   {
+    "t": 1793430623,
+    "round": 33542416,
+    "anchored": true,
+    "randomness": "dded97e0cec31211b61f9a6d8e2d1270ca632dc2aad9e4b6f917811b2c043d56",
+    "anchor": "0071232f210a3d56051aff609f620c1f13602179fa7ede995d2674f5a064f3b2",
+    "dac_utc": 1793430623.012
+   },
+   {
+    "t": 1793430624,
+    "round": 33542417,
+    "anchored": true,
+    "randomness": "0da9170a1b7c96dc28dc2b64c94081850eb05b2c481763f9d1e4d55fa81d888c",
+    "anchor": "24e83b7d3c0b415880b265e6f02631578db2f67cdb753bcc7540701b76fc2624",
+    "dac_utc": 1793430624.012
+   },
+   {
+    "t": 1793430625,
+    "round": 33542417,
+    "anchored": true,
+    "randomness": "0da9170a1b7c96dc28dc2b64c94081850eb05b2c481763f9d1e4d55fa81d888c",
+    "anchor": "30232680bcfa76b6d59d004925ec095efd09ce9558afe19c3a42d70346e0f87c",
+    "dac_utc": 1793430625.012
+   },
+   {
+    "t": 1793430626,
+    "round": 33542417,
+    "anchored": true,
+    "randomness": "0da9170a1b7c96dc28dc2b64c94081850eb05b2c481763f9d1e4d55fa81d888c",
+    "anchor": "11049ea1bc235c3385421f7925b7f91830c429c1d4ed098f2dc89d26bde6b745",
+    "dac_utc": 1793430626.012
+   },
+   {
+    "t": 1793430627,
+    "round": 33542418,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "081cd1260c053aa1c8fa7d29ce9d2ff5a38ce680cf8a58ed46f110c3197374e3",
+    "dac_utc": 1793430627.012
+   }
+  ],
+  "merkle": null
+ },
+ "warnings": [],
+ "run": {
+  "tool": "wt-detect",
+  "version": "0.1.0",
+  "schema": "wt-detect/1.0",
+  "argv": [
+   "wt-detect",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\intact.wav",
+   "-o",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\timeout.json",
+   "--venue",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\venue_pa",
+   "--key-file",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\venue.key",
+   "--confirm",
+   "--l2-timeout",
+   "4",
+   "--quiet"
+  ],
+  "started_unix": 1793229791.633299,
+  "elapsed_s": 9.12,
+  "seed": 3827901401,
+  "git_commit": null,
+  "env": {
+   "python": "3.10.11",
+   "platform": "Windows-10-10.0.26200-SP0",
+   "numpy": "2.2.6",
+   "scipy": "1.15.3",
+   "soundfile": "0.14.0",
+   "ffmpeg": "ffmpeg-win-x86_64-v7.1.exe"
+  }
+ },
+ "session_match": {
+  "session": "session_1793430600",
+  "env_z": 7.83,
+  "feed_offset_s": 7.98,
+  "tried": [
+   {
+    "session": "session_1793430600",
+    "env_z": 7.83,
+    "l1": "present"
+   }
+  ],
+  "candidates": [
+   {
+    "session": "session_1793430600",
+    "env_z": 7.83
+   }
+  ]
+ }
+}

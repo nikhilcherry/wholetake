@@ -1,0 +1,510 @@
+{
+ "schema": "wt-detect/1.0",
+ "status": "ok",
+ "error": null,
+ "pending_layers": [],
+ "verdict": {
+  "recorded_here": "verified",
+  "integrity": "edited",
+  "headline": "Recorded at HH Goa demo stage, 31 Oct 2026, 12:40:08 IST. 0.30 s removed at 0:12.",
+  "x_reply_text": "Recorded at HH Goa demo stage, 31 Oct 2026, 12:40:08 IST. 0.30 s removed at 0:12.",
+  "recorded_at_unix": 1793430608.009001,
+  "recorded_at_iso": "2026-10-31T12:40:08.009+05:30",
+  "recorded_at_precision_s": 0.01,
+  "recorded_at_source": "l1",
+  "tempo_ratio": 1.0,
+  "content_match": true,
+  "venue": {
+   "name": "HH Goa demo stage",
+   "key_id": "fe6ffdf64ee970bf",
+   "session": "session_1793430600",
+   "mode": "pa"
+  },
+  "edits": [
+   {
+    "kind": "removed",
+    "clip_t": 12.3973125,
+    "clip_t_range": [
+     12.3973125,
+     12.3973125
+    ],
+    "removed_s": 0.30000488097452277,
+    "duration_s": null,
+    "venue_t_from": 1793430620.394309,
+    "venue_t_to": 1793430620.694314,
+    "precision_s": 0.002,
+    "source": "l1",
+    "restored_audio": "hero_witness_edit0.wav",
+    "restored_audio_venue_t": [
+     1793430618.894309,
+     1793430622.194314
+    ],
+    "restored_text": null
+   }
+  ],
+  "confidence": {
+   "l1": "present",
+   "l2": "skipped",
+   "wt": "present"
+  }
+ },
+ "clip": {
+  "path": "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\hero_cut.m4a",
+  "sha256": "d4caf5d3feec7e69625afca341e6f1f3ae3ce19eb1fce0ca1d6626ef6692518e",
+  "bytes": 352613,
+  "duration_s": 21.717,
+  "orig_rate": 48000,
+  "orig_channels": 1,
+  "codec": "aac",
+  "decoder": "ffmpeg"
+ },
+ "layers": {
+  "l1": {
+   "status": "present",
+   "impl": "s2",
+   "elapsed_s": 5.25,
+   "summary": "Recorded at HH Goa demo stage, 31 Oct 12:40:07 IST. 0.30 s removed at 0:12.40.",
+   "z": 58.77295585161159,
+   "p_value": null,
+   "recorded_at_unix": 1793430607.997001,
+   "venue_t_start": 1793430607.997001,
+   "venue_t_end": 1793430629.7969983,
+   "tempo": null,
+   "content_match": true,
+   "edits": [
+    {
+     "kind": "removed",
+     "clip_t": 12.3973125,
+     "clip_t_range": [
+      12.3973125,
+      12.3973125
+     ],
+     "removed_s": 0.30000488097452277,
+     "duration_s": null,
+     "venue_t_from": 1793430620.394309,
+     "venue_t_to": 1793430620.694314,
+     "precision_s": 0.002,
+     "source": "l1",
+     "restored_audio": "hero_witness_edit0.wav",
+     "restored_audio_venue_t": [
+      1793430618.894309,
+      1793430622.194314
+     ]
+    }
+   ],
+   "detail": {
+    "mode": "pa",
+    "key_id": "fe6ffdf64ee970bf",
+    "session_key_id": "fe6ffdf64ee970bf",
+    "venue": "HH Goa demo stage",
+    "clip_s": 21.717333333333332,
+    "windows_matched": 36,
+    "windows": 42,
+    "stamp": "present",
+    "matched": true,
+    "pieces": [
+     {
+      "clip_start": 0.0,
+      "clip_end": 12.3973125,
+      "venue_t_start": 1793430607.997001,
+      "venue_t_end": 1793430620.394309,
+      "offset_samples": -383856.04986061674,
+      "drift_ppm": -0.35640767659383954,
+      "align_windows": 20,
+      "align_psr": 39.2464309947169,
+      "l1_windows": 12,
+      "l1_frac_z5": 1.0,
+      "l1_median_z": 23.10878055945702,
+      "l1_clip_z": 58.77295585161159,
+      "l1_stamp_lag_ms": 0.0,
+      "l1_wrong_key_max_z": 2.4332453405715184,
+      "l1_wrong_key_frac_z5": 0.0,
+      "l1_speech_removed_db": 16.251726828291275,
+      "l1_status": "present"
+     },
+     {
+      "clip_start": 12.3973125,
+      "clip_end": 21.5,
+      "venue_t_start": 1793430620.694314,
+      "venue_t_end": 1793430629.7969983,
+      "offset_samples": -398256.07205952134,
+      "drift_ppm": -0.3593105526444873,
+      "align_windows": 16,
+      "align_psr": 37.117092384663316,
+      "l1_windows": 9,
+      "l1_frac_z5": 1.0,
+      "l1_median_z": 23.19905506352614,
+      "l1_clip_z": 55.50676027360604,
+      "l1_stamp_lag_ms": 0.0,
+      "l1_wrong_key_max_z": 2.4542471879660943,
+      "l1_wrong_key_frac_z5": 0.0,
+      "l1_speech_removed_db": 16.995087630906053,
+      "l1_status": "present"
+     }
+    ],
+    "edits": [
+     {
+      "kind": "removed",
+      "clip_t": 12.3973125,
+      "removed_s": 0.30000488097452277,
+      "venue_t_from": 1793430620.394309,
+      "venue_t_to": 1793430620.694314
+     }
+    ],
+    "lead_in_s": 0.0,
+    "unmatched_tail_s": 0.21733333333333332,
+    "runtime_s": 4.908840894699097,
+    "timings": {
+     "prep": 0.075,
+     "align": 0.519,
+     "fit": 0.367,
+     "render": 1.156,
+     "cuts": 0.803,
+     "score": 1.988
+    },
+    "verdict": "Recorded at HH Goa demo stage, 31 Oct 12:40:07 IST. 0.30 s removed at 0:12.40."
+   },
+   "error": null,
+   "integrity_checked": true,
+   "lead_in_s": 0.0,
+   "unmatched_tail_s": 0.21733333333333332
+  },
+  "l2": {
+   "status": "skipped",
+   "impl": "s3",
+   "elapsed_s": null,
+   "summary": "L1 already locked (pass --confirm to run L2 too)",
+   "z": null,
+   "p_value": null,
+   "recorded_at_unix": null,
+   "venue_t_start": null,
+   "venue_t_end": null,
+   "tempo": null,
+   "content_match": null,
+   "edits": [],
+   "detail": null,
+   "error": null
+  },
+  "wt": {
+   "status": "present",
+   "impl": "s4",
+   "elapsed_s": 0.76,
+   "summary": "0.29 s removed at 12.45 s",
+   "z": null,
+   "p_value": null,
+   "recorded_at_unix": null,
+   "venue_t_start": null,
+   "venue_t_end": null,
+   "tempo": null,
+   "content_match": true,
+   "edits": [
+    {
+     "kind": "removed",
+     "clip_t": 12.45,
+     "clip_t_range": [
+      12.45,
+      12.45
+     ],
+     "removed_s": 0.291,
+     "restored_text": null,
+     "precision_s": 0.01,
+     "wt_kind": "cut",
+     "source": "wt"
+    }
+   ],
+   "detail": {
+    "status": "present",
+    "summary": "0.29 s removed at 12.45 s",
+    "edits": [
+     {
+      "kind": "cut",
+      "clip_t": 12.45,
+      "clip_t_range": [
+       12.45,
+       12.45
+      ],
+      "removed_s": 0.291,
+      "restored_text": "",
+      "precision_s": 0.01
+     }
+    ],
+    "recorded_at_unix": null,
+    "venue_t_start": 7.983,
+    "venue_t_end": 30.003,
+    "transcript": "",
+    "verdict": "cut"
+   },
+   "error": null,
+   "witness_t_range": [
+    7.983,
+    30.003
+   ],
+   "wt_verdict": "cut",
+   "integrity_checked": true,
+   "transcript": ""
+  }
+ },
+ "proof": {
+  "spec": "roomstamp-v1",
+  "drand_chain": "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971",
+  "key_id": "fe6ffdf64ee970bf",
+  "session_id": "session_1793430600",
+  "session_log_sha256": "cbf2f00546050c688010eb49a4060a5d6e89609e7e50bdf2e842fb2ed60d71bf",
+  "feed_wav_sha256": "31d84985681f1249a0688cf7fd9c099bcd50ac8bb2d48f33aa6ebf3318437e07",
+  "clip_sha256": "d4caf5d3feec7e69625afca341e6f1f3ae3ce19eb1fce0ca1d6626ef6692518e",
+  "normalized_pcm_sha256": "858093ddad80ee3731a6c4c81efc0614d1819e9e05815aa0681a4d5e530ae94c",
+  "normalized_format": "float32le mono 48000 Hz",
+  "matched_t_range": [
+   1793430607,
+   1793430630
+  ],
+  "drand_rounds": [
+   33542411,
+   33542412,
+   33542413,
+   33542414,
+   33542415,
+   33542416,
+   33542417,
+   33542418
+  ],
+  "anchors": [
+   {
+    "t": 1793430607,
+    "round": 33542411,
+    "anchored": true,
+    "randomness": "0b6f3fd9c1d499f508348c15cd593d05474238d766a4bab88273a05836bfd74c",
+    "anchor": "96ba49f7c5550a5e48a5af83f61fa2dbb8802b61c59f11b87d46f1d3421bc630",
+    "dac_utc": 1793430607.012
+   },
+   {
+    "t": 1793430608,
+    "round": 33542411,
+    "anchored": true,
+    "randomness": "0b6f3fd9c1d499f508348c15cd593d05474238d766a4bab88273a05836bfd74c",
+    "anchor": "db91c3d039e9153e5021c4f221362424010316c438266779af1009c87b53a3b8",
+    "dac_utc": 1793430608.012
+   },
+   {
+    "t": 1793430609,
+    "round": 33542412,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "135937fa82bb12aac2e2d1a76a1b30b9bbc00e87bf11418e390727a94e6bb3b1",
+    "dac_utc": 1793430609.012
+   },
+   {
+    "t": 1793430610,
+    "round": 33542412,
+    "anchored": true,
+    "randomness": "e5adfeda39f7de979bcf800c2c38930fe933b3292487e5e4d359cd6add615da7",
+    "anchor": "26f661eb8826c2b0e41c434764f5f7491f1c8e32d217e5595c1cd1e158e56e0f",
+    "dac_utc": 1793430610.012
+   },
+   {
+    "t": 1793430611,
+    "round": 33542412,
+    "anchored": true,
+    "randomness": "e5adfeda39f7de979bcf800c2c38930fe933b3292487e5e4d359cd6add615da7",
+    "anchor": "a5366c12237baaf877fcd4602cbe146e4c9836d4b5fc717808712a388f865a8b",
+    "dac_utc": 1793430611.012
+   },
+   {
+    "t": 1793430612,
+    "round": 33542413,
+    "anchored": true,
+    "randomness": "723da0ecf5545c6a0c4f3f31e6c59f4f352cd4b632b94e85934ccbaa2bde1dc5",
+    "anchor": "cf68e38545d20622d89c8c7e1d6d5308dec46c38ae741a9604d55d28b1cf15e7",
+    "dac_utc": 1793430612.012
+   },
+   {
+    "t": 1793430613,
+    "round": 33542413,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "c34ca29e8fc2e295c9c7b8f6156e5c084f34b84a7d83cf9106ee2deac0137ada",
+    "dac_utc": 1793430613.012
+   },
+   {
+    "t": 1793430614,
+    "round": 33542413,
+    "anchored": true,
+    "randomness": "723da0ecf5545c6a0c4f3f31e6c59f4f352cd4b632b94e85934ccbaa2bde1dc5",
+    "anchor": "cdf57e48c90a7aee340bff82803465993ada4f85461c772b375f55c58aed2cad",
+    "dac_utc": 1793430614.012
+   },
+   {
+    "t": 1793430615,
+    "round": 33542414,
+    "anchored": true,
+    "randomness": "52f9508f3d1d682e30d5b86a30c2be0afd51ed345bc25a2035d43489d64f1c45",
+    "anchor": "0e48ae270244e8058c33356b7e180bfd41bccf6b99efa69403d73cb7f9c0e26b",
+    "dac_utc": 1793430615.012
+   },
+   {
+    "t": 1793430616,
+    "round": 33542414,
+    "anchored": true,
+    "randomness": "52f9508f3d1d682e30d5b86a30c2be0afd51ed345bc25a2035d43489d64f1c45",
+    "anchor": "6d903fe88883a32f13797a850fc0d3d5f29db75cc2b20e96a10745b35810b3dd",
+    "dac_utc": 1793430616.012
+   },
+   {
+    "t": 1793430617,
+    "round": 33542414,
+    "anchored": true,
+    "randomness": "52f9508f3d1d682e30d5b86a30c2be0afd51ed345bc25a2035d43489d64f1c45",
+    "anchor": "c6638462470c732e2a5a426e7777e67166b79eae1a5150ce1a431c167a51896b",
+    "dac_utc": 1793430617.012
+   },
+   {
+    "t": 1793430618,
+    "round": 33542415,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "5165e720f4e8b29a7464dccd14dda617b47c17465bf3b61373186cfa7b51c9c8",
+    "dac_utc": 1793430618.012
+   },
+   {
+    "t": 1793430619,
+    "round": 33542415,
+    "anchored": true,
+    "randomness": "ed3e0ff63029110fd9a0e71b8f3e14ab3a897c0d917bf2ae50296a4f0d52479a",
+    "anchor": "371ea2db6bb4454401051edf8649531ce0a9450246f1736d1d9d9d0b72d95693",
+    "dac_utc": 1793430619.012
+   },
+   {
+    "t": 1793430620,
+    "round": 33542415,
+    "anchored": true,
+    "randomness": "ed3e0ff63029110fd9a0e71b8f3e14ab3a897c0d917bf2ae50296a4f0d52479a",
+    "anchor": "754159bfaf0f02eb9e9fdf96e4adaff69ffe7cd47119a93d5d0fd5e6233e49c2",
+    "dac_utc": 1793430620.012
+   },
+   {
+    "t": 1793430621,
+    "round": 33542416,
+    "anchored": true,
+    "randomness": "dded97e0cec31211b61f9a6d8e2d1270ca632dc2aad9e4b6f917811b2c043d56",
+    "anchor": "0e65fded15bf7a643874946c59579dd41b35dabf03ade9b0c65aff64733085da",
+    "dac_utc": 1793430621.012
+   },
+   {
+    "t": 1793430622,
+    "round": 33542416,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "aab6c16c5bce7a054eb466dc7e1d3355189fdcbffb33e66863a33607c98c5bbd",
+    "dac_utc": 1793430622.012
+   },
+   {
+    "t": 1793430623,
+    "round": 33542416,
+    "anchored": true,
+    "randomness": "dded97e0cec31211b61f9a6d8e2d1270ca632dc2aad9e4b6f917811b2c043d56",
+    "anchor": "0071232f210a3d56051aff609f620c1f13602179fa7ede995d2674f5a064f3b2",
+    "dac_utc": 1793430623.012
+   },
+   {
+    "t": 1793430624,
+    "round": 33542417,
+    "anchored": true,
+    "randomness": "0da9170a1b7c96dc28dc2b64c94081850eb05b2c481763f9d1e4d55fa81d888c",
+    "anchor": "24e83b7d3c0b415880b265e6f02631578db2f67cdb753bcc7540701b76fc2624",
+    "dac_utc": 1793430624.012
+   },
+   {
+    "t": 1793430625,
+    "round": 33542417,
+    "anchored": true,
+    "randomness": "0da9170a1b7c96dc28dc2b64c94081850eb05b2c481763f9d1e4d55fa81d888c",
+    "anchor": "30232680bcfa76b6d59d004925ec095efd09ce9558afe19c3a42d70346e0f87c",
+    "dac_utc": 1793430625.012
+   },
+   {
+    "t": 1793430626,
+    "round": 33542417,
+    "anchored": true,
+    "randomness": "0da9170a1b7c96dc28dc2b64c94081850eb05b2c481763f9d1e4d55fa81d888c",
+    "anchor": "11049ea1bc235c3385421f7925b7f91830c429c1d4ed098f2dc89d26bde6b745",
+    "dac_utc": 1793430626.012
+   },
+   {
+    "t": 1793430627,
+    "round": 33542418,
+    "anchored": false,
+    "randomness": null,
+    "anchor": "081cd1260c053aa1c8fa7d29ce9d2ff5a38ce680cf8a58ed46f110c3197374e3",
+    "dac_utc": 1793430627.012
+   },
+   {
+    "t": 1793430628,
+    "round": 33542418,
+    "anchored": true,
+    "randomness": "9362c43c45e8e6ebf1663875952ad3c807648ce1c7da75d4e9eeb14b5c7357a7",
+    "anchor": "e0d7b111c09542774ab81214d61dda756c4aabd826baf375a19f3fc36a1d2d86",
+    "dac_utc": 1793430628.012
+   },
+   {
+    "t": 1793430629,
+    "round": 33542418,
+    "anchored": true,
+    "randomness": "9362c43c45e8e6ebf1663875952ad3c807648ce1c7da75d4e9eeb14b5c7357a7",
+    "anchor": "cbb93d9cc17936f858ba6065382a3b4ee348fcc8ca803e9b503fa93f9109a195",
+    "dac_utc": 1793430629.012
+   }
+  ],
+  "merkle": null
+ },
+ "warnings": [
+  "wt_asr_off: WHOLETAKE_ASR unset, ran the witness matcher acoustic-only (no restored words); set WHOLETAKE_ASR to enable transcripts"
+ ],
+ "run": {
+  "tool": "wt-detect",
+  "version": "0.1.0",
+  "schema": "wt-detect/1.0",
+  "argv": [
+   "wt-detect",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\hero_cut.m4a",
+   "-o",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\hero_witness.json",
+   "--venue",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\venue_pa",
+   "--key-file",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\venue.key",
+   "--witness",
+   "C:\\Users\\rajsh\\AppData\\Local\\Temp\\wt_s5_kexqw_ac\\witness_stream.wav",
+   "--quiet"
+  ],
+  "started_unix": 1793229707.8824854,
+  "elapsed_s": 6.46,
+  "seed": 3556100820,
+  "git_commit": null,
+  "env": {
+   "python": "3.10.11",
+   "platform": "Windows-10-10.0.26200-SP0",
+   "numpy": "2.2.6",
+   "scipy": "1.15.3",
+   "soundfile": "0.14.0",
+   "ffmpeg": "ffmpeg-win-x86_64-v7.1.exe"
+  }
+ },
+ "session_match": {
+  "session": "session_1793430600",
+  "env_z": 4.23,
+  "feed_offset_s": 8.26,
+  "tried": [
+   {
+    "session": "session_1793430600",
+    "env_z": 4.23,
+    "l1": "present"
+   }
+  ],
+  "candidates": [
+   {
+    "session": "session_1793430600",
+    "env_z": 4.23
+   }
+  ]
+ }
+}
