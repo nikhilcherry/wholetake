@@ -466,8 +466,8 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
             gap["type"] = "reorder"
         elif jump > tol:
             removed = _words_in(ww, wl, wr)
-            # no transcript (acoustic-only record): can't tell words from pauses, call it a deletion
-            gap["type"] = "deletion" if removed or not ww else "pause_trim"
+            has_speech = bool(removed) if ww else (_speech_frac(Fw, int(wl * FPS), int(wr * FPS)) > 0.2)
+            gap["type"] = "deletion" if has_speech else "pause_trim"
             gap["restored_text"] = " ".join(w.tok for w in removed)
             gap["restored_words"] = [{"word": w.tok, "start_s": round(w.start, 3), "end_s": round(w.end, 3)}
                                      for w in removed]
