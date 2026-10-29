@@ -351,7 +351,7 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
         return [Variant(tp, tau, reverb_variant(feats[tp], tau)) for tp in tps for tau in taus]
 
     stage = 1
-    r = _run_stage(key, null_keys, src, t_lo, t_hi, variants([1.0]), pair)
+    r = _run_stage(key, null_keys, src, t_lo, t_hi, variants([tempos[0]]), pair)
     p = gumbel_p(r["score"], r["null"])
     if p > P_PRESENT and len(tempos) > 1:
         r2 = _run_stage(key, null_keys, src, t_lo, t_hi, variants(tempos), pair)
