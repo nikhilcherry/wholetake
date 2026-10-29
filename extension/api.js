@@ -106,7 +106,73 @@
     };
   }
 
-  async function submitClip(baseUrl, clipUrl, options) {
+  function _createTimedFetch(baseFetch, timeoutMs) {
+  const ms = Number(timeoutMs) > 0 ? Number(timeoutMs) : 10000;
+  return async function timedFetch(url, init) {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const fetchInit = Object.assign({}, init || {});
+    if (controller && !fetchInit.signal) {
+      fetchInit.signal = controller.signal;
+    }
+    let timer = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        if (controller) {
+          try { controller.abort(); } catch (_) {}
+        }
+        const err = new Error('Request timed out after ' + ms + 'ms');
+        err.name = 'AbortError';
+        err.code = 'ETIMEDOUT';
+        reject(err);
+      }, ms);
+    });
+    try {
+      const resp = await Promise.race([baseFetch(url, fetchInit), timeoutPromise]);
+      if (resp && typeof resp === 'object') {
+        const origJson = typeof resp.json === 'function' ? resp.json.bind(resp) : null;
+        const origText = typeof resp.text === 'function' ? resp.text.bind(resp) : null;
+        if (origJson) {
+          resp.json = () => Promise.race([origJson(), timeoutPromise]).finally(() => clearTimeout(timer));
+        }
+        if (origText) {
+          resp.text = () => Promise.race([origText(), timeoutPromise]).finally(() => clearTimeout(timer));
+        }
+      }
+      return resp;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+async function submitClip(serviceUrl, clipUrl, options = {}) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const reqTimeoutMs = Number(opts.requestTimeoutMs || opts.timeoutMs) > 0
+    ? Number(opts.requestTimeoutMs || opts.timeoutMs)
+    : 10000;
+  const baseFetch = opts.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+  if (typeof baseFetch !== 'function') {
+    return { ok: false, offline: true, error: 'fetch is not available in this runtime' };
+  }
+  const timedFetch = _createTimedFetch(baseFetch, reqTimeoutMs);
+  let timer = null;
+  try {
+    return await Promise.race([
+      _origSubmitClip(serviceUrl, clipUrl, Object.assign({}, opts, { fetchImpl: timedFetch })),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          resolve({ ok: false, offline: true, timeout: true, error: 'Request timed out after ' + reqTimeoutMs + 'ms' });
+        }, reqTimeoutMs + 50);
+      })
+    ]);
+  } catch (err) {
+    return { ok: false, offline: true, error: err && err.message ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function _origSubmitClip(baseUrl, clipUrl, options) {
     var opts = options || {};
     var fetchImpl = opts.fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
     var base = normalizeServiceUrl(baseUrl);
@@ -179,7 +245,34 @@
     };
   }
 
-  async function getVerdict(baseUrl, jobId, options) {
+  async function getVerdict(serviceUrl, jobId, options = {}) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const reqTimeoutMs = Number(opts.requestTimeoutMs || opts.timeoutMs) > 0
+    ? Number(opts.requestTimeoutMs || opts.timeoutMs)
+    : 10000;
+  const baseFetch = opts.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+  if (typeof baseFetch !== 'function') {
+    return { ok: false, offline: true, error: 'fetch is not available in this runtime' };
+  }
+  const timedFetch = _createTimedFetch(baseFetch, reqTimeoutMs);
+  let timer = null;
+  try {
+    return await Promise.race([
+      _origGetVerdict(serviceUrl, jobId, Object.assign({}, opts, { fetchImpl: timedFetch })),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          resolve({ ok: false, offline: true, timeout: true, error: 'Request timed out after ' + reqTimeoutMs + 'ms' });
+        }, reqTimeoutMs + 50);
+      })
+    ]);
+  } catch (err) {
+    return { ok: false, offline: true, error: err && err.message ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function _origGetVerdict(baseUrl, jobId, options) {
     var opts = options || {};
     var fetchImpl = opts.fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
     var base = normalizeServiceUrl(baseUrl);
@@ -256,7 +349,59 @@
     });
   }
 
-  async function pollVerdict(baseUrl, jobId, options) {
+  async function pollVerdict(serviceUrl, jobId, options = {}) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const intervalMs = Number(opts.intervalMs) > 0 ? Number(opts.intervalMs) : 1000;
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 60000;
+  const perRequestTimeoutMs = Number(opts.requestTimeoutMs) > 0 ? Number(opts.requestTimeoutMs) : timeoutMs;
+  const deadline = Date.now() + timeoutMs;
+  let lastRes = null;
+
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const reqTimeout = Math.max(1, Math.min(perRequestTimeoutMs, remainingMs));
+    const res = await getVerdict(
+      serviceUrl,
+      jobId,
+      Object.assign({}, opts, { requestTimeoutMs: reqTimeout, timeoutMs: reqTimeout })
+    );
+    lastRes = res;
+    if (!res || !res.ok) {
+      return res || { ok: false, offline: true, error: 'Empty verdict response' };
+    }
+    const job = res.job;
+    if (typeof opts.onProgress === 'function' && job) {
+      try { opts.onProgress(job); } catch (_) {}
+    }
+    if (job && job.status === 'done') {
+      return { ok: true, id: job.id || jobId, status: 'done', job, result: job.result || null };
+    }
+    if (job && job.status === 'error') {
+      return {
+        ok: false,
+        offline: false,
+        id: job.id || jobId,
+        status: 'error',
+        job,
+        error: job.error || 'Verdict job failed'
+      };
+    }
+    const sleepMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()));
+    if (sleepMs <= 0) break;
+    await new Promise((r) => setTimeout(r, sleepMs));
+  }
+
+  return {
+    ok: false,
+    offline: true,
+    timeout: true,
+    job: lastRes && lastRes.job ? lastRes.job : null,
+    error: 'Polling timed out after ' + timeoutMs + 'ms'
+  };
+}
+
+async function _origPollVerdict(baseUrl, jobId, options) {
     var opts = options || {};
     var intervalMs = typeof opts.intervalMs === "number" && opts.intervalMs >= 0 ? opts.intervalMs : 800;
     var timeoutMs = typeof opts.timeoutMs === "number" && opts.timeoutMs > 0 ? opts.timeoutMs : 60000;
