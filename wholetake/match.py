@@ -109,7 +109,8 @@ def _sw_pieces(cw: list[asr.Word], ww: list[asr.Word]) -> list[list[tuple[int, i
         if len(anchors) < 3:
             break
         pieces.append(anchors)
-        S[anchors[0][0]:anchors[-1][0] + 1] = -10.0   # mask these clip tokens and look again
+        for c, _ in anchors:
+            S[c] = -10.0                              # mask matched clip tokens and look again
     return pieces
 
 
