@@ -820,8 +820,14 @@ def _fmt_clock(s: float) -> str:
 
 
 def _fmt_utc(t: float, tz_h: float = 5.5, tz: str = "IST") -> str:
-    tt = time.gmtime(t + tz_h * 3600)
-    return time.strftime("%d %b %H:%M:%S", tt) + f" {tz}"
+    try:
+        t_val = float(t)
+        if not np.isfinite(t_val) or t_val < 0:
+            raise ValueError("out of range")
+        tt = time.gmtime(t_val + tz_h * 3600)
+        return time.strftime("%d %b %H:%M:%S", tt) + f" {tz}"
+    except (OSError, OverflowError, ValueError):
+        return f"t={t:.2f}s"
 
 
 def human_verdict(r: dict) -> str:
