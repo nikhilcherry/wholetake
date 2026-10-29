@@ -461,6 +461,8 @@ def main(argv=None) -> None:
     from .cli import load_key
     key = load_key(a.key_file)
     src = RandomnessSource(a.log, a.unanchored, a.drand_cache)
+    if bool(a.t_from) != bool(a.t_to):
+        ap.error("--from and --to must be given together")
     if a.around:
         c = _parse_time(a.around)
         t_lo, t_hi = int(c - a.span / 2), int(c + a.span / 2)
