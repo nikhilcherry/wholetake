@@ -133,7 +133,7 @@ def detect(rec: np.ndarray, feed: np.ndarray, key: bytes, t_start: int, params: 
     lag = _align(rec, voice)
     y = _crop(rec, lag, n)
     res = _cancel(y, voice)
-    removed_db = 10 * np.log10(np.sum(sosfilt(SOS_L1, y) ** 2) / (np.sum(sosfilt(SOS_L1, res) ** 2) + 1e-20))
+    removed_db = 10 * np.log10((np.sum(sosfilt(SOS_L1, y) ** 2) + 1e-20) / (np.sum(sosfilt(SOS_L1, res) ** 2) + 1e-20))
     result = {"lag_samples": lag, "speech_removed_db": float(removed_db), "l1": layer1(res, stamp.astype(np.float64)),
               "seconds": len(secs), "anchored_seconds": int(sum(s.anchored for s in secs))}
     if params.mode != "table" and params.l2_delta_db > 0:
