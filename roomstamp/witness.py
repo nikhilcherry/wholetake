@@ -25,7 +25,12 @@ def _record(path: str):
         return record.load(path)
     rec_dir = path + ".wtrec"
     if os.path.exists(os.path.join(rec_dir, "meta.json")):
-        return record.load(rec_dir)
+        try:
+            rec = record.load(rec_dir)
+            if rec.meta.get("source_sha256") == record.sha256_file(path):
+                return rec
+        except Exception:
+            pass
     return record.build(path, rec_dir)
 
 
