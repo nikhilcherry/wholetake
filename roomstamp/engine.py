@@ -122,6 +122,8 @@ class Stamper:
         if pos + n > FS:   # never happens with fixed BLOCK; never crash the audio thread
             st.missing = True
             return np.zeros(n, np.float32), np.zeros(n, np.float32), st
+        if n == 0:
+            return np.zeros(0, np.float32), np.zeros(0, np.float32), st
 
         env, self.env_zi = lfilter([ENV_A], [1.0, -(1.0 - ENV_A)], np.abs(x), zi=self.env_zi)
         blk_rms = float(np.sqrt(np.mean(x * x) + 1e-20))
