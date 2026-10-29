@@ -732,7 +732,7 @@ def fuse(doc: dict) -> dict:
     v.update({"recorded_here": recorded, "integrity": integrity, "headline": head, "x_reply_text": x,
               "recorded_at_unix": wall, "recorded_at_iso": iso_time(wall) if wall is not None else None,
               "recorded_at_precision_s": prec, "recorded_at_source": src,
-              "tempo_ratio": (L.get("l2") or {}).get("tempo") if src == "l2" else 1.0 if src else None,
+              "tempo_ratio": (L.get("l2") or {}).get("tempo") if s["l2"] in ("present", "likely") else (1.0 if s["l1"] in ("present", "inconclusive") else None),
               "edits": edits, "content_match": bool(content),
               "confidence": {k: s[k] for k in ("l1", "l2", "wt")}})
     doc["pending_layers"] = pending
