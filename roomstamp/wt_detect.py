@@ -1373,6 +1373,20 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     os.makedirs(work, exist_ok=True)
 
     sessions = find_sessions(venue_dir, vname, W) if key else []
+    if prev and session_log is None:
+        prev_argv = (prev.get("run") or {}).get("argv") or []
+        for i, arg in enumerate(prev_argv):
+            if arg == "--session" and i + 1 < len(prev_argv):
+                session_log = prev_argv[i + 1]
+                break
+            if isinstance(arg, str) and arg.startswith("--session="):
+                session_log = arg.split("=", 1)[1]
+                break
+        if session_log is None:
+            prev_sid = ((prev.get("verdict") or {}).get("venue") or {}).get("session")
+            prev_sp = (prev.get("session_match") or {}).get("path")
+            if prev_sp and os.path.isfile(prev_sp) and not any(s.sid == prev_sid for s in sessions):
+                session_log = prev_sp
     kid = spec.key_id(key) if key else None
     t_around = parse_time(around)
     cands = rank_sessions(sessions, kid, t_around, session_log, clip, W) if key else []
@@ -1408,7 +1422,7 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     if sl:
         doc["verdict"]["venue"] = {"name": sl.venue_name if sl.venue_name != DEFAULT_VENUE_NAME else vname,
                                    "key_id": sl.key_id, "session": sl.sid, "mode": sl.mode}
-        doc["session_match"] = {"session": sl.sid, "env_z": round(min(sl.env_z, 999.0), 2),
+        doc["session_match"] = {"session": sl.sid, "path": sl.path, "env_z": round(min(sl.env_z, 999.0), 2),
                                 "feed_offset_s": None if sl.feed_offset_s is None else round(sl.feed_offset_s, 2),
                                 "tried": tries,
                                 "candidates": [{"session": s.sid, "env_z": round(min(s.env_z, 999.0), 2)} for s in cands]}
