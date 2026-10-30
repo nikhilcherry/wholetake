@@ -25,6 +25,7 @@ import concurrent.futures as cf
 import hashlib
 import hmac
 import json
+import math
 import os
 import struct
 import sys
@@ -425,7 +426,6 @@ def summary(r: dict) -> str:
 # ---------------------------------------------------------------- CLI
 
 def _parse_time(s: str) -> int:
-    import math
     import re
     s = s.strip()
     if "_" not in s:
@@ -460,24 +460,36 @@ def main(argv=None) -> None:
     ap.add_argument("--drand-cache", default=os.path.join("logs", "drand_cache.json"))
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
+    if not (math.isfinite(a.span) and a.span >= 0):
+        ap.error("--span must be a finite non-negative number")
+    if (a.t_from is not None) != (a.t_to is not None):
+        ap.error("--from and --to must be given together")
+    t_lo = t_hi = None
+    if a.around is not None:
+        try:
+            c = _parse_time(a.around)
+            t_lo, t_hi = int(c - a.span / 2), int(c + a.span / 2)
+        except (ValueError, OverflowError) as e:
+            ap.error(f"invalid --around/--span: {e}")
+    elif a.t_from is not None and a.t_to is not None:
+        try:
+            t_lo, t_hi = _parse_time(a.t_from), _parse_time(a.t_to)
+        except (ValueError, OverflowError) as e:
+            ap.error(f"invalid --from/--to: {e}")
+    elif not a.log:
+        ap.error("give --log, --around, or --from/--to")
 
     from .cli import load_key
     key = load_key(a.key_file)
     src = RandomnessSource(a.log, a.unanchored, a.drand_cache)
-    if bool(a.t_from) != bool(a.t_to):
-        ap.error("--from and --to must be given together")
-    if a.around:
-        c = _parse_time(a.around)
-        t_lo, t_hi = int(c - a.span / 2), int(c + a.span / 2)
-    elif a.t_from and a.t_to:
-        t_lo, t_hi = _parse_time(a.t_from), _parse_time(a.t_to)
-    elif src.log_span():
-        t_lo, t_hi = src.log_span()
+    if t_lo is None or t_hi is None:
+        span = src.log_span()
+        if not span:
+            ap.error("give --log, --around, or --from/--to")
+        t_lo, t_hi = span
         if src.header and src.header.get("key_id") not in (None, spec.key_id(key)):
             print(f"note: key_id {spec.key_id(key)} != session key_id {src.header['key_id']} (expect 'absent')",
                   file=sys.stderr)
-    else:
-        ap.error("give --log, --around, or --from/--to")
     if t_lo > t_hi:
         t_lo, t_hi = t_hi, t_lo
     if t_hi - t_lo > 3600:
