@@ -44,23 +44,55 @@ def witness_heads_snapshot(witness_root: Path) -> dict[str, str]:
     for sdir in sorted(witness_root.iterdir()):
         if not sdir.is_dir():
             continue
+        head_hash: str | None = None
+        head_seq: int = -1
         hp = sdir / "head.json"
         if hp.exists():
             try:
-                obj = json.loads(hp.read_text())
-                if isinstance(obj.get("hash"), str):
-                    heads[sdir.name] = obj["hash"]
-                    continue
+                obj = json.loads(hp.read_text(encoding="utf-8"))
+                if isinstance(obj, dict) and isinstance(obj.get("hash"), str) and obj["hash"].strip():
+                    head_hash = obj["hash"].strip()
+                    seq_val = obj.get("seq")
+                    if isinstance(seq_val, int) and not isinstance(seq_val, bool):
+                        head_seq = seq_val
             except Exception:
                 pass
+
+        chain_hash: str | None = None
+        chain_seq: int = -1
         cp = sdir / "chain.jsonl"
         if cp.exists():
             try:
-                lines = [ln for ln in cp.read_bytes().splitlines() if ln.strip()]
-                if lines:
-                    heads[sdir.name] = json.loads(lines[-1].decode("utf-8"))["hash"]
+                raw_lines = cp.read_bytes().splitlines()
             except Exception:
-                pass
+                raw_lines = []
+            for raw_line in reversed(raw_lines):
+                if not raw_line.strip():
+                    continue
+                try:
+                    entry = json.loads(raw_line.decode("utf-8"))
+                except Exception:
+                    continue
+                if isinstance(entry, dict) and isinstance(entry.get("hash"), str) and entry["hash"].strip():
+                    chain_hash = entry["hash"].strip()
+                    seq_val = entry.get("seq")
+                    if isinstance(seq_val, int) and not isinstance(seq_val, bool):
+                        chain_seq = seq_val
+                    break
+
+        chosen: str | None = None
+        if chain_hash is not None and head_hash is not None:
+            if chain_seq >= 0 and head_seq >= 0:
+                chosen = chain_hash if chain_seq >= head_seq else head_hash
+            else:
+                chosen = chain_hash
+        elif chain_hash is not None:
+            chosen = chain_hash
+        elif head_hash is not None:
+            chosen = head_hash
+
+        if chosen is not None:
+            heads[sdir.name] = chosen
     return heads
 
 
