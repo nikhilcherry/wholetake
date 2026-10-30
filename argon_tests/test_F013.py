@@ -13,7 +13,9 @@ socket.socket.connect = _no_net
 
 try:
     from wholetake import asr, selftest
-    asr.MODEL = "large-v3-turbo"
+    # a model that is never in the local cache, so the offline fallback runs on any machine
+    # (large-v3-turbo is cached on dev boxes and then loads fine offline)
+    asr.MODEL = "Systran/faster-whisper-not-cached-f013"
     asr._model = None
 
     words = asr.transcribe(np.zeros(16000, dtype=np.float32))

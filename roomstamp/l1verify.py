@@ -45,6 +45,9 @@ PSR_LOCAL = 7.0            # peak / robust sigma to accept a local match that co
 PSR_JUMP = 12.0            # ... or that jumps to a new offset within the local span
 PSR_GLOBAL_EXTRA = 3.0     # global threshold = sqrt(2 ln N_lags) + this
 OFF_TOL = int(0.005 * FS)  # windows within 5 ms belong to one piece
+SOLID_FRAC = 0.3          # an offset change (jump / acquire) needs this much of the window voiced, in 20 ms
+                          # blocks: a pause onset holds a few ms of speech filter tail that clears the window
+                          # RMS bar and correlates peakily anywhere (F125: PSR 15-19 false jumps)
 EDIT_MIN = int(0.004 * FS) # offset jumps smaller than 4 ms are not reported as edits
 MAX_DRIFT = 300e-6
 GAP_UNMATCHED = int(2.5 * FS)  # longer unmatched gaps between pieces = foreign audio
@@ -112,14 +115,21 @@ def _phat_cc(seg: np.ndarray, ref: np.ndarray) -> np.ndarray:
     return sfft.irfft(X, nfft)[:n - len(seg) + 1]
 
 
-def _phat_search(seg: np.ndarray, ref: np.ndarray) -> tuple[int, float]:
-    """Best start of `seg` inside `ref` (8 kHz, both band-limited). Returns (index, PSR)."""
+def _signed(c: np.ndarray, pol: int) -> np.ndarray:
+    """Peak-picking view of a PHAT correlation: both polarities until the clip's is known (pol 0), then
+    only that one. A clip is inverted as a whole (one recording chain), and letting every window pick
+    its own sign doubles the false peaks a pause or a jump can lock onto."""
+    return np.abs(c) if pol == 0 else pol * c
+
+
+def _phat_search(seg: np.ndarray, ref: np.ndarray, pol: int = 0) -> tuple[int, float, int]:
+    """Best start of `seg` inside `ref` (8 kHz, both band-limited). Returns (index, PSR, polarity)."""
     c = _phat_cc(seg, ref)
     if len(c) == 0:
-        return 0, 0.0
-    ac = np.abs(c)
+        return 0, 0.0, pol
+    ac = _signed(c, pol)
     k = int(np.argmax(ac))
-    return k, float(ac[k] / _sigma(c))
+    return k, float(ac[k] / _sigma(c)), pol or (1 if c[k] >= 0 else -1)
 
 
 @dataclass
@@ -130,14 +140,14 @@ class Win:
     rms: float = 0.0
 
 
-def _local(seg: np.ndarray, x8: np.ndarray, c8: int, off: int) -> tuple[int, float]:
+def _local(seg: np.ndarray, x8: np.ndarray, c8: int, off: int, pol: int = 0) -> tuple[int, float]:
     lo = max(0, c8 - off - int(LOCAL_S * FS8))
     hi = min(len(x8), c8 - off + len(seg) + int(LOCAL_S * FS8))
     c = _phat_cc(seg, x8[lo:hi])
     if len(c) == 0:
         return lo, 0.0
     sig = _sigma(c)
-    ac = np.abs(c)
+    ac = _signed(c, pol)
     tol8 = max(1, OFF_TOL // DEC)
     exp = (c8 - off) - lo
     s0, s1 = max(0, exp - tol8), min(len(c), exp + tol8 + 1)
@@ -159,28 +169,39 @@ def align_windows(y8: np.ndarray, x8: np.ndarray, log=None) -> list[Win]:
     if float(np.max(np.abs(x8))) < 1e-5:
         return wins
     loud = np.percentile([w.rms for w in wins], 90) if wins else 0.0
-    voiced = [w.rms >= max(1e-5, loud * 10 ** (-30 / 20)) for w in wins]
+    thr = max(1e-5, loud * 10 ** (-30 / 20))
+    voiced = [w.rms >= thr for w in wins]
+    blk = FS8 // 50
+
+    def solid(w: Win) -> bool:
+        b = y8[w.c8:w.c8 + AWIN // blk * blk].reshape(-1, blk)
+        return float(np.mean(np.sqrt(np.mean(b ** 2, axis=1)) >= thr)) >= SOLID_FRAC
+
     n_glob = max(len(x8) - AWIN, 1)
     psr_glob = np.sqrt(2 * np.log(n_glob)) + PSR_GLOBAL_EXTRA
     cur = None  # running offset c8 - f8
+    pol = 0     # clip polarity, fixed by the first global lock
     for w, v in zip(wins, voiced):
         if not v:
             continue  # silence / pause: no speech to align
         seg = y8[w.c8:w.c8 + AWIN]
         if cur is not None:
-            f, psr = _local(seg, x8, w.c8, cur)
+            f, psr = _local(seg, x8, w.c8, cur, pol)
             # continuing the running offset needs PSR_LOCAL; a jump inside the local span needs
             # more (unrelated audio reaches PSR 8-10 somewhere in +-3 s, and a false lock would
             # drag the running offset away from where the next real match is)
             same = abs((w.c8 - f) - cur) * DEC <= OFF_TOL
-            if (same and psr >= PSR_LOCAL) or psr >= PSR_JUMP:
+            if (same and psr >= PSR_LOCAL) or (psr >= PSR_JUMP and solid(w)):
                 w.f8, w.psr, cur = f, psr, w.c8 - f
                 continue
         # (re)acquire: a 3 s window has ~sqrt(3) more PSR than 1 s (a 1 s window just after a
         # long cut can sit under the global bar on table audio)
-        k, psr = _phat_search(y8[w.c8:w.c8 + ACQ_WIN], x8)
+        if not solid(w):
+            continue  # too little speech to move the offset; the backward pass may still continue it
+        k, psr, p = _phat_search(y8[w.c8:w.c8 + ACQ_WIN], x8, pol)
         if psr >= psr_glob:
-            f, psr1 = _local(seg, x8, w.c8, w.c8 - k)
+            pol = p
+            f, psr1 = _local(seg, x8, w.c8, w.c8 - k, pol)
             if abs((w.c8 - f) - (w.c8 - k)) * DEC <= OFF_TOL and psr1 >= PSR_LOCAL:
                 w.f8, w.psr, cur = f, psr1, w.c8 - f
             else:
@@ -192,7 +213,7 @@ def align_windows(y8: np.ndarray, x8: np.ndarray, log=None) -> list[Win]:
         if not v:
             continue
         if nxt is not None and (w.f8 < 0 or abs((w.c8 - w.f8) - nxt) * DEC > OFF_TOL):
-            f, psr = _local(y8[w.c8:w.c8 + AWIN], x8, w.c8, nxt)
+            f, psr = _local(y8[w.c8:w.c8 + AWIN], x8, w.c8, nxt, pol)
             if psr >= PSR_LOCAL and abs((w.c8 - f) - nxt) * DEC <= OFF_TOL:
                 w.f8, w.psr = f, psr
         if w.f8 >= 0:
@@ -930,7 +951,8 @@ def _fmt_clock(s: float) -> str:
 def _fmt_utc(t: float, tz_h: float = 5.5, tz: str = "IST") -> str:
     try:
         t_val = float(t)
-        if not np.isfinite(t_val) or t_val < 0:
+        # explicit year-3000 cap: Windows gmtime raises past it and Linux does not, same output on both
+        if not np.isfinite(t_val) or t_val < 0 or t_val >= 32503680000:
             raise ValueError("out of range")
         tt = time.gmtime(t_val + tz_h * 3600)
         return time.strftime("%d %b %H:%M:%S", tt) + f" {tz}"

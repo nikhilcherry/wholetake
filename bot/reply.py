@@ -83,10 +83,15 @@ def reply_text(
     pieces = wit.get("pieces") or []
     removed = wit.get("removed") or []
 
+    # Roomstamp (venue PA stamp) speaks for clips the witness never saw; same rule as compose.build_headline
+    stamp = (verdict.get("detection") or {}).get("stamp") or {}
+    by_stamp = stamp.get("present") is True and vkind in ("faithful", "not_found") and not removed and (
+        bool(stamp.get("cuts")) or vkind == "not_found")
+
     suffixes: list[str] = []
     if _all_anchored(verdict):
         suffixes.append(" · anchored on Base")
-    if verdict.get("detector_kind") == "text-only":
+    if verdict.get("detector_kind") == "text-only" and not by_stamp:
         suffixes.append(" · text match only")
 
     jid = job_id or verdict.get("job_id") or verdict.get("id") or verdict.get("verdict_id")
@@ -96,6 +101,19 @@ def reply_text(
 
     tail = "".join(suffixes) + link_part
     tag = _stream_tag(verdict)
+
+    if by_stamp:
+        where = stamp.get("venue") or "the venue"
+        when = _fmt_stream_dt(stamp.get("recorded_at_utc"))
+        heard = f"Roomstamp: recorded at {where}" + (f", {when}" if when else "")
+        cuts = stamp.get("cuts") or []
+        if cuts:
+            c0 = cuts[0]
+            dur_rem = max(0.1, round(float(c0.get("removed_s") or 0.0), 1))
+            at_str = _fmt_mmss(float(c0.get("at_clip_s") or 0.0))
+            more = f" (+{len(cuts) - 1} more cut{'s' if len(cuts) > 2 else ''})" if len(cuts) > 1 else ""
+            return (f"✂️ Cut — {dur_rem:.1f} s removed at {at_str}{more}. {heard}." + tail)[:MAX_TWEET_LEN]
+        return (f"✅ Whole take — nothing removed. {heard}." + tail)[:MAX_TWEET_LEN]
 
     if vkind == "faithful":
         tag_part = f" {tag}" if tag else ""

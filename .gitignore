@@ -5,3 +5,4 @@ tools/.argon/
 venue.key
 *.key
 logs/
+testdata/witness/record/

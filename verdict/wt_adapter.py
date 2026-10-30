@@ -169,16 +169,28 @@ def _layer_score(st: dict | None) -> float | None:
     return STATUS_SCORE.get(st["status"])
 
 
+def venue_paths() -> tuple[Path, Path]:
+    """(emitter log dir, venue key file). Accepts every name the stack uses: ours (WT_VENUE*), wt-detect's
+    (WT_VENUE_DIR, WT_KEY_FILE) and deploy's (ROOMSTAMP_*); defaults are repo-relative, and deploy.sh's
+    keys/venue.key is found when there is no venue.key at the root."""
+    repo = Path(__file__).resolve().parents[1]
+    env = lambda *names: next((os.environ[n] for n in names if os.environ.get(n)), None)
+    venue = Path(env("WT_VENUE", "WT_VENUE_DIR", "ROOMSTAMP_LOG_DIR") or repo / "logs")
+    key = env("WT_VENUE_KEY", "WT_KEY_FILE", "ROOMSTAMP_KEY_FILE")
+    if key is None:
+        key = next((p for p in (repo / "venue.key", repo / "keys" / "venue.key") if p.is_file()), repo / "venue.key")
+    return venue, Path(key)
+
+
 def roomstamp_stamp(clip_wav: Path) -> dict | None:
     """Layer-1 Roomstamp check when this box has a venue key and emitter logs; None means 'not checked'."""
-    venue = Path(os.environ.get("WT_VENUE", "logs"))
-    key_file = os.environ.get("WT_VENUE_KEY", "venue.key")
-    if not os.environ.get("ROOMSTAMP_KEY") and not Path(key_file).is_file():
+    venue, key_file = venue_paths()
+    if not os.environ.get("ROOMSTAMP_KEY") and not key_file.is_file():
         return None
     if not venue.is_dir() or not any(venue.glob("session_*.jsonl")):
         return None
     from roomstamp import wt_detect
-    doc = wt_detect.run(str(clip_wav), venue_dir=str(venue), key_file=key_file, layers="l1,l2", fast=True)
+    doc = wt_detect.run(str(clip_wav), venue_dir=str(venue), key_file=str(key_file), layers="l1,l2", fast=True)
     if doc.get("status") != "ok":
         warn(f"roomstamp: {doc.get('error')}")
         return None

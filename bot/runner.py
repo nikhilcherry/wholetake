@@ -162,6 +162,10 @@ def _short_reason(err: Exception | str) -> str:
     msg = " ".join(str(err).strip().splitlines()).strip()
     if not msg:
         msg = "processing failed"
+    elif msg.startswith("detector "):
+        # detector crashes carry stderr (library paths, tracebacks): log them, never post them
+        print(f"[bot] detector error: {msg}", flush=True)
+        msg = "our detector hit an internal error; try again in a few minutes"
     prefix = "Couldn't check this clip: "
     budget = MAX_TWEET_LEN - len(prefix)
     if len(msg) > budget:

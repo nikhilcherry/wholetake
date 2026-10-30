@@ -84,7 +84,11 @@ if [[ -z "$SUBCOMMAND" ]]; then
 fi
 
  find_python() {
-    if [[ -x "$DEFAULT_ROOT/.venv/bin/python" ]]; then
+    # ./py wraps the venv python and puts its pip CUDA libs (cuBLAS/cuDNN) on LD_LIBRARY_PATH;
+    # bare .venv/bin/python makes faster-whisper die with "libcublas.so.12 is not found"
+    if [[ -x "$DEFAULT_ROOT/py" && -x "$DEFAULT_ROOT/.venv/bin/python" ]]; then
+        echo "$DEFAULT_ROOT/py"
+    elif [[ -x "$DEFAULT_ROOT/.venv/bin/python" ]]; then
         echo "$DEFAULT_ROOT/.venv/bin/python"
     elif command -v python3 >/dev/null 2>&1; then
         echo "python3"

@@ -46,7 +46,12 @@ def main():
                 "t_start": t0, "fs": FS, "block": engine.BLOCK, "params": p.as_log(),
                 "feed_wav": "feed.wav"
             }) + "\n")
-        cli.main(["detect", rec_path, "--log", log_path, "--key-file", key_path, "--start", "99", "--dur", "5"])
+        # out-of-range --start is rejected outright since c6bbc25 (F132)
+        try:
+            cli.main(["detect", rec_path, "--log", log_path, "--key-file", key_path, "--start", "99", "--dur", "5"])
+            raise AssertionError("--start 99 on a 1 s feed was accepted")
+        except SystemExit:
+            pass
         cli.main(["detect", rec_path, "--log", log_path, "--key-file", key_path, "--start", "0", "--dur", "1"])
         print("PASS detect_short_and_empty")
     except Exception as e:

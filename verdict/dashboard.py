@@ -101,9 +101,9 @@ def extract_cuts_for_card(res: dict) -> list[dict]:
 
 def collect_status_telemetry(manager) -> dict:
     """Build truthful live system telemetry for `GET /api/status` and the dashboard."""
+    from verdict.wt_adapter import venue_paths
     repo_root = Path(__file__).resolve().parents[1]
-    venue_dir = Path(os.environ.get("WT_VENUE") or os.environ.get("WT_VENUE_DIR") or (repo_root / "logs"))
-    key_file = Path(os.environ.get("WT_VENUE_KEY") or os.environ.get("WT_KEY_FILE") or (repo_root / "venue.key"))
+    venue_dir, key_file = venue_paths()
     key_present = bool(os.environ.get("ROOMSTAMP_KEY")) or key_file.is_file()
 
     sessions: list[dict] = []

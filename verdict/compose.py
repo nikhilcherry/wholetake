@@ -184,12 +184,13 @@ def build_headline(
         dur_rem = max(0.1, round(float(c0.get("removed_s", 0.0)), 2))
         at_str = _fmt_mmss(float(c0.get("at_clip_s", 0.0)))
         venue_str = stamp.get("venue") or stream or "stage"
-        return f"{dur_rem:.2f} s removed at {at_str} (Roomstamp verified at {venue_str}).{suffix}"
+        # the claim is the acoustic stamp's, not the witness matcher's: no "(text match only)"
+        return f"{dur_rem:.2f} s removed at {at_str} (Roomstamp verified at {venue_str})."
 
     if verdict == "not_found":
         if stamp.get("present") is True:
             venue_str = stamp.get("venue") or "stage"
-            return f"Faithful: Roomstamp verified at {venue_str}.{suffix}"
+            return f"Faithful: Roomstamp verified at {venue_str}."
         return f"Not in the record.{suffix}"
 
     if verdict == "faithful":

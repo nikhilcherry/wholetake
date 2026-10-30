@@ -68,12 +68,14 @@ If Docker Desktop is unavailable or paused on the stage laptop to conserve RAM/C
 Containers on Windows/macOS do not have low-latency, jitter-free access to the host soundcard DAC. For live acoustic emission (`S1`), **always run `python -m roomstamp` natively on the Windows 11 host** sharing `./logs` and `./keys/venue.key` with the `verdict` service:
 
 1. **Avoid Bluetooth Output**: Bluetooth headsets rebuffer with **+30 ms to +170 ms jumps**, breaking sample-accurate phase alignment. Always use wired output via hostapi **`WASAPI`** and the output device matching **`Speakers (Realtek`** at **48,000 Hz** (`80 ms` buffer in `pa` mode, `100 ms` buffer in `table`/`file` mode).
-2. **Hardware-Muted Laptop Mic & Table Mode**: If the internal laptop microphone is hardware-muted (returning zeros), use an external USB/lav mic for the clean speech feed or run pre-rendered / file-backed emission (`python -m roomstamp render`) so `logs/session_<t>.jsonl` and `logs/feed_<t>.wav` contain the clean reference.
+2. **Hardware-Muted Laptop Mic & Table Mode**: If the internal laptop microphone is hardware-muted (returning zeros), use an external USB/lav mic for the clean speech feed or run pre-rendered / file-backed emission (`python -m roomstamp render`) so a `logs/session_*.jsonl` log and its clean feed WAV exist next to each other.
 3. **Offline ASR Mode**: When `faster-whisper` models are not downloaded on the demo machine, keep `WHOLETAKE_ASR=none` (default in `.env.example` and `Dockerfile`) so `wholetake` uses its deterministic acoustic matcher.
 
 ```powershell
 # Render a stamped session into ./logs using the shared venue key
-python -m roomstamp render testdata/speech.wav --out logs/demo_stamped.wav --key keys/venue.key --log-dir logs --mode pa
+# writes logs/session_demo.wav (what the PA plays), logs/session_demo.jsonl (the session log the
+# verdict service looks for) and logs/session_demo_feed.wav (the clean reference)
+python -m roomstamp render testdata/speech.wav logs/session_demo.wav --key-file keys/venue.key --mode pa
 ```
 
 ---

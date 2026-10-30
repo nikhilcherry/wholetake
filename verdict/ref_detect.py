@@ -42,15 +42,28 @@ def get_whisper_model():
 
 def transcribe_clip(wav_path: Path) -> list[dict]:
     """Run faster-whisper with word timestamps on `wav_path`, returning [{w, s, e, p}]."""
-    model = get_whisper_model()
-    segments, _info = model.transcribe(
-        str(wav_path),
-        beam_size=5,
-        word_timestamps=True,
-        condition_on_previous_text=False,
-    )
+    global _MODEL
+
+    def run() -> list:
+        segments, _info = get_whisper_model().transcribe(
+            str(wav_path),
+            beam_size=5,
+            word_timestamps=True,
+            condition_on_previous_text=False,
+        )
+        return list(segments)
+
+    try:
+        segs = run()
+    except RuntimeError as e:
+        # ctranslate2 loads cuBLAS/cuDNN lazily: a box without them fails here, not in WhisperModel()
+        if "cuda" not in str(e).lower() and "cublas" not in str(e).lower() and "cudnn" not in str(e).lower():
+            raise
+        from faster_whisper import WhisperModel
+        _MODEL = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
+        segs = run()
     words: list[dict] = []
-    for seg in segments:
+    for seg in segs:
         for wd in seg.words or []:
             text = (wd.word or "").strip()
             if not text:

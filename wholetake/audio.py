@@ -7,6 +7,8 @@ than 35 dB below the file's loud frames are zeroed: pauses carry no evidence eit
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 
 import numpy as np
@@ -23,8 +25,15 @@ SILENCE_DB = 35.0
 
 
 def ffmpeg_exe() -> str:
-    import imageio_ffmpeg
-    return imageio_ffmpeg.get_ffmpeg_exe()
+    """ffmpeg from $FFMPEG, PATH, or the imageio-ffmpeg wheel (same order as roomstamp.media)."""
+    exe = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as e:
+        raise RuntimeError("ffmpeg not found: install it or `pip install imageio-ffmpeg`") from e
 
 
 def decode(path: str, sr: int = SR) -> np.ndarray:

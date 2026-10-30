@@ -1263,6 +1263,11 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
     pieces = wit.get("pieces") or []
     removed = wit.get("removed") or []
     inserted = wit.get("inserted") or []
+    # the venue's Roomstamp speaks for a clip no witnessed stream holds (same rule as compose.build_headline
+    # and the bot): the hero follows the stamp, the witness sections below still say "not in the record"
+    st_cuts = (stamp_obj or {}).get("cuts") or []
+    by_stamp = bool(stamp_obj and stamp_obj.get("present") is True and vkind in ("faithful", "not_found")
+                    and not removed and (st_cuts or vkind == "not_found"))
     coverage = result.get("coverage") or {}
     label = result.get("label")
     proofs = result.get("proofs") or []
@@ -1281,7 +1286,9 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
             embedded_manifest = None
 
     badges_html: list[str] = []
-    if det_kind == "text-only":
+    if by_stamp:
+        pass  # the verdict is the stamp's; the "Roomstamp verified" badge below says so
+    elif det_kind == "text-only":
         badges_html.append(
             '<span class="caveat-chip" tabindex="0">ⓘ text match only'
             '<span class="caveat-tip">Matched via transcript word timing only; acoustic fingerprint '
@@ -1307,6 +1314,22 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
     hero_meta_str = " · ".join(_esc(p) for p in meta_parts)
 
     plain_h1 = _esc(_plain_english_summary(vkind, pieces, removed, inserted))
+
+    if by_stamp:
+        vmeta = VERDICT_META["cut" if st_cuts else "faithful"]
+        if st_cuts:
+            total = sum(max(0.1, float(c.get("removed_s") or 0.0)) for c in st_cuts)
+            at0 = _fmt_mmss(float(st_cuts[0].get("at_clip_s") or 0.0))
+            plain_h1 = _esc(f"{total:.1f} seconds were removed at {at0}" if len(st_cuts) == 1
+                            else f"{total:.1f} seconds removed across {len(st_cuts)} cuts")
+        else:
+            plain_h1 = "Recorded at the venue: nothing removed"
+        st_meta = [str(stamp_obj.get("venue") or "Roomstamp venue")]
+        st_when = _fmt_utc_human(stamp_obj.get("recorded_at_utc"))
+        if st_when:
+            st_meta.append(st_when)
+        st_meta.append(f"Clip {dur_s:.1f}s")
+        hero_meta_str = " · ".join(_esc(p) for p in st_meta)
 
     hear_btn_html = ""
     if removed:
@@ -1389,6 +1412,15 @@ def render_verdict_page(job: dict, witness_root: Path | str) -> str:
             + "<p>This clip joins non-contiguous segments from the witnessed record.</p>"
             + after_drawer_html
             + "</section>"
+        )
+    elif by_stamp:
+        record_sec = (
+            '<section class="card">'
+            '<div class="sec-head"><h2 class="sec-title">What the room says</h2></div>'
+            "<p>This clip is not in a witnessed livestream. The venue's PA mixed a keyed Roomstamp into the "
+            "sound; the stamp in this clip proves where and when it was recorded, and any cut shows up as a "
+            "jump in the stamp's own clock.</p>"
+            "</section>"
         )
     else:
         record_sec = (
