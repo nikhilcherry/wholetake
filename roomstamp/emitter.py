@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import json
+import math
 import os
 import platform
 import queue
@@ -73,6 +74,12 @@ class Emitter:
         # buffer with silence *without* flagging an underflow, so the buffer must be larger
         # than any stall. Measured on this laptop (25 s runs): 30 ms slips ~40 ms, 50 ms ~20 ms,
         # 80 and 100 ms slip 0. pa mode uses 80 ms (live voice through the PA lags ~85 ms).
+        if latency is not None:
+            if isinstance(latency, bool) or not isinstance(latency, (int, float, np.floating)):
+                raise ValueError(f"latency must be a finite positive number, got {latency!r}")
+            latency = float(latency)
+            if not math.isfinite(latency) or latency <= 0.0:
+                raise ValueError(f"latency must be > 0 and finite, got {latency!r}")
         self.latency = latency if latency is not None else (0.08 if params.mode == "pa" else 0.1)
         self.hostapi = hostapi
         self.out_dev = find_device(out_device, "output", hostapi)
@@ -159,6 +166,12 @@ class Emitter:
 
     # ---- main --------------------------------------------------------------------------
     def run(self, duration: float | None = None) -> str:
+        if duration is not None:
+            if isinstance(duration, bool) or not isinstance(duration, (int, float, np.floating)):
+                raise ValueError(f"duration must be a finite positive number, got {duration!r}")
+            duration = float(duration)
+            if not math.isfinite(duration) or duration <= 0.0:
+                raise ValueError(f"duration must be > 0 and finite, got {duration!r}")
         self.drand.start()
         for _ in range(30):            # give the first poll up to 3 s, never more
             if self.drand.last_ok:
@@ -254,7 +267,7 @@ class Emitter:
                     handle_item(item)
                 if self.stopping and self.fade_left == 0:
                     break
-                if duration and self.n >= duration * FS and not self.stopping:
+                if duration is not None and self.n >= duration * FS and not self.stopping:
                     self.stopping = True
         except KeyboardInterrupt:
             self.stopping = True
