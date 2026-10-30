@@ -114,6 +114,7 @@ function Initialize-RuntimeEnv {
         (Join-Path $RootDir "data/witness"),
         (Join-Path $RootDir "data/verdicts"),
         (Join-Path $RootDir "data/simx"),
+        (Join-Path $RootDir "data/uploads"),
         (Join-Path $RootDir "logs"),
         (Join-Path $RootDir "keys")
     )
@@ -182,6 +183,9 @@ function Invoke-LocalDemo {
     $simxData = Join-Path $RootDir "data/simx"
     $witnessRoot = Join-Path $RootDir "data/witness"
     $verdictsDir = Join-Path $RootDir "data/verdicts"
+    $uploadsDir = Join-Path $RootDir "data/uploads"
+    $logsDir = Join-Path $RootDir "logs"
+    $keyFile = Join-Path $RootDir "keys/venue.key"
 
     switch -Regex ($Action) {
         '^(start|up)$' {
@@ -189,7 +193,7 @@ function Invoke-LocalDemo {
             $verdictCmd = "python -m verdict serve --host 127.0.0.1 --port 8790"
             if ($DryRun) {
                 Write-Output "[dry-run] $simxCmd"
-                Write-Output "[dry-run] WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=`"$witnessRoot`" WT_VERDICTS_DIR=`"$verdictsDir`" WHOLETAKE_ASR=none $verdictCmd"
+                Write-Output "[dry-run] WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=`"$witnessRoot`" WT_VERDICTS_DIR=`"$verdictsDir`" WT_UPLOADS_DIR=`"$uploadsDir`" ROOMSTAMP_LOG_DIR=`"$logsDir`" ROOMSTAMP_KEY_FILE=`"$keyFile`" WHOLETAKE_ASR=none $verdictCmd"
                 if ($WithDaemons) {
                     Write-Output "[dry-run] X_API_BASE=http://127.0.0.1:8791 X_BOT_TOKEN=sim-wholetake WT_VERDICT_URL=http://127.0.0.1:8790 WT_PAGE_BASE=http://127.0.0.1:8790 python -m bot run"
                 }
@@ -203,6 +207,9 @@ function Invoke-LocalDemo {
             $env:WT_FETCH_ALLOW_HOSTS = "127.0.0.1:8791"
             $env:WT_WITNESS_ROOT = $witnessRoot
             $env:WT_VERDICTS_DIR = $verdictsDir
+            $env:WT_UPLOADS_DIR = $uploadsDir
+            $env:ROOMSTAMP_LOG_DIR = $logsDir
+            $env:ROOMSTAMP_KEY_FILE = $keyFile
             if (-not $env:WHOLETAKE_ASR) { $env:WHOLETAKE_ASR = "none" }
 
             $pVerdict = Start-Process -FilePath "python" -ArgumentList @("-m", "verdict", "serve", "--host", "127.0.0.1", "--port", "8790") -WorkingDirectory $DefaultRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RootDir "logs/verdict.log") -RedirectStandardError (Join-Path $RootDir "logs/verdict.err.log")

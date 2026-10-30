@@ -123,6 +123,7 @@ ensure_runtime_env() {
         "$ROOT_DIR/data/witness" \
         "$ROOT_DIR/data/verdicts" \
         "$ROOT_DIR/data/simx" \
+        "$ROOT_DIR/data/uploads" \
         "$ROOT_DIR/logs" \
         "$ROOT_DIR/keys"
 
@@ -179,7 +180,7 @@ run_local_demo() {
     case "$action" in
         start|up)
             local simx_cmd="$PY_BIN -m simx serve --host 127.0.0.1 --port 8791 --data \"$ROOT_DIR/data/simx\""
-            local verdict_cmd="WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=\"$ROOT_DIR/data/witness\" WT_VERDICTS_DIR=\"$ROOT_DIR/data/verdicts\" WHOLETAKE_ASR=none $PY_BIN -m verdict serve --host 127.0.0.1 --port 8790"
+            local verdict_cmd="WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=\"$ROOT_DIR/data/witness\" WT_VERDICTS_DIR=\"$ROOT_DIR/data/verdicts\" WT_UPLOADS_DIR=\"$ROOT_DIR/data/uploads\" ROOMSTAMP_LOG_DIR=\"$ROOT_DIR/logs\" ROOMSTAMP_KEY_FILE=\"$ROOT_DIR/keys/venue.key\" WHOLETAKE_ASR=none $PY_BIN -m verdict serve --host 127.0.0.1 --port 8790"
             if [[ "$DRY_RUN" -eq 1 ]]; then
                 echo "[dry-run] $simx_cmd"
                 echo "[dry-run] $verdict_cmd"
@@ -195,6 +196,9 @@ run_local_demo() {
                 WT_FETCH_ALLOW_HOSTS="127.0.0.1:8791" \
                 WT_WITNESS_ROOT="$ROOT_DIR/data/witness" \
                 WT_VERDICTS_DIR="$ROOT_DIR/data/verdicts" \
+                WT_UPLOADS_DIR="$ROOT_DIR/data/uploads" \
+                ROOMSTAMP_LOG_DIR="$ROOT_DIR/logs" \
+                ROOMSTAMP_KEY_FILE="$ROOT_DIR/keys/venue.key" \
                 WHOLETAKE_ASR="${WHOLETAKE_ASR:-none}" \
                 nohup "$PY_BIN" -m verdict serve --host 127.0.0.1 --port 8790 > "$ROOT_DIR/logs/verdict.log" 2>&1 &
                 echo $! > "$verdict_pid_file"
