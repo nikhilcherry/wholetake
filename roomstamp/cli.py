@@ -25,7 +25,15 @@ from .spec import FS
 
 
 def load_key(path: str) -> bytes:
-    raw = os.environ.get("ROOMSTAMP_KEY") or open(path, encoding="utf-8").read().strip()
+    raw = os.environ.get("ROOMSTAMP_KEY")
+    if not raw:
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = f.read().strip()
+        except OSError as e:
+            raise SystemExit(f"cannot read key file {path}: {e}") from None
+    else:
+        raw = raw.strip()
     try:
         key = bytes.fromhex(raw)
     except ValueError:
@@ -54,6 +62,8 @@ def cmd_render(a) -> None:
     from .drand import fetch_round
     key = load_key(a.key_file)
     x = wavio.read(a.wav_in)
+    if len(x) == 0:
+        raise SystemExit("input WAV is empty")
     p = params_from(a)
     t0 = a.t_start if a.t_start is not None else int(time.time()) - (len(x) // FS + 10)   # recent past: all rounds published
     cache: dict[int, bytes | None] = {}
