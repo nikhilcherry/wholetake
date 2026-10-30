@@ -245,7 +245,21 @@ async function _origSubmitClip(baseUrl, clipUrl, options) {
     };
   }
 
-  async function getVerdict(serviceUrl, jobId, options = {}) {
+  async function getVerdict(serviceUrl, jobId, options) {
+  return _getVerdictInner(serviceUrl, jobId, options).then((res) => {
+    if (res && res.ok && (!res.job || typeof res.job !== 'object' || Array.isArray(res.job))) {
+      return {
+        ok: false,
+        offline: false,
+        status: typeof res.status === 'number' ? res.status : 200,
+        error: 'Invalid verdict response payload',
+      };
+    }
+    return res;
+  });
+}
+
+async function _getVerdictInner(serviceUrl, jobId, options = {}) {
   const opts = options && typeof options === 'object' ? options : {};
   const reqTimeoutMs = Number(opts.requestTimeoutMs || opts.timeoutMs) > 0
     ? Number(opts.requestTimeoutMs || opts.timeoutMs)
