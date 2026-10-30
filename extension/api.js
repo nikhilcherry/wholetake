@@ -515,7 +515,39 @@ async function _origPollVerdict(baseUrl, jobId, options) {
     }
   }
 
-  function formatVerdictSummary(jobOrResult, baseUrl) {
+  function formatVerdictSummary(jobOrResult, serviceUrl) {
+    const summary = _rawFormatVerdictSummary.apply(this, arguments);
+    if (summary && typeof summary === 'object') {
+      const job = jobOrResult && typeof jobOrResult === 'object' ? jobOrResult : {};
+      const result = job.result && typeof job.result === 'object' ? job.result : job;
+      const detection = result.detection && typeof result.detection === 'object' ? result.detection : result;
+      const rawStamp = detection.stamp && typeof detection.stamp === 'object' ? detection.stamp : null;
+      const stampCuts = (summary.stamp && Array.isArray(summary.stamp.cuts) && summary.stamp.cuts.length > 0)
+        ? summary.stamp.cuts
+        : (rawStamp && Array.isArray(rawStamp.cuts) ? rawStamp.cuts : []);
+      if ((!Array.isArray(summary.cuts) || summary.cuts.length === 0) && stampCuts.length > 0) {
+        summary.cuts = stampCuts.map((sc) => {
+          const atS = sc && (sc.at_clip_s != null ? sc.at_clip_s : sc.atClipS);
+          const remS = sc && (sc.removed_s != null ? sc.removed_s : sc.removedS);
+          return {
+            afterClipS: typeof atS === 'number' ? atS : null,
+            removedS: typeof remS === 'number' ? remS : null,
+            seq: null,
+            srcS: null,
+            words: '',
+          };
+        });
+      }
+      const cutsLen = Array.isArray(summary.cuts) ? summary.cuts.length : 0;
+      const v = String(summary.verdict || 'unknown').toLowerCase();
+      if ((cutsLen > 0 || stampCuts.length > 0) && (v === 'faithful' || v === 'intact' || v === 'not_found' || v === 'unknown')) {
+        summary.verdict = 'cut';
+      }
+    }
+    return summary;
+  }
+
+  function _rawFormatVerdictSummary(jobOrResult, baseUrl) {
     var base = normalizeServiceUrl(baseUrl);
     var job = (jobOrResult && typeof jobOrResult === "object") ? jobOrResult : {};
     var result = (job.result && typeof job.result === "object") ? job.result : job;
