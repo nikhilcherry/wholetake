@@ -184,7 +184,7 @@ def align_windows(y8: np.ndarray, x8: np.ndarray, log=None) -> list[Win]:
             if abs((w.c8 - f) - (w.c8 - k)) * DEC <= OFF_TOL and psr1 >= PSR_LOCAL:
                 w.f8, w.psr, cur = f, psr1, w.c8 - f
             else:
-                w.f8, w.psr, cur = k, psr, w.c8 - k
+                cur = w.c8 - k
     # backward pass: voiced windows left unmatched OR locked onto an early repeated phrase
     # before a longer confirmed piece belong to the piece's offset if it matches locally
     nxt = None
@@ -222,20 +222,30 @@ def group_pieces(wins: list[Win]) -> list[list[Win]]:
     """Consecutive matched windows with one offset. A single window whose offset is not
     confirmed by its neighbour and that sits between two windows agreeing with each other is
     a straddler (window across a cut) and is dropped."""
+    loud = np.percentile([w.rms for w in wins], 90) if wins else 0.0
+    v_thr = max(1e-5, loud * 10 ** (-30 / 20))
+
+    def _voiced_gap(c_lo: int, c_hi: int) -> bool:
+        if c_hi <= c_lo + AWIN:
+            return False
+        return any(c_lo < u.c8 < c_hi and u.f8 < 0 and u.rms >= v_thr for u in wins)
+
     m = [w for w in wins if w.f8 >= 0]
     groups: list[list[Win]] = []
     for w in m:
         off = (w.c8 - w.f8) * DEC
-        if groups and abs(off - (groups[-1][-1].c8 - groups[-1][-1].f8) * DEC) <= OFF_TOL:
+        if (groups and abs(off - (groups[-1][-1].c8 - groups[-1][-1].f8) * DEC) <= OFF_TOL
+                and not _voiced_gap(groups[-1][-1].c8, w.c8)):
             groups[-1].append(w)
         else:
             groups.append([w])
     # drop unconfirmed singletons (straddlers, repeated-phrase blips) unless very strong
     keep = [g for g in groups if len(g) >= 2 or g[0].psr >= 2 * PSR_LOCAL]
-    # merge neighbours that ended up with the same offset (pause or dropped blip in between)
+    # merge neighbours that ended up with the same offset across silent pauses
     out: list[list[Win]] = []
     for g in keep:
-        if out and abs((g[0].c8 - g[0].f8) - (out[-1][-1].c8 - out[-1][-1].f8)) * DEC <= OFF_TOL:
+        if (out and abs((g[0].c8 - g[0].f8) - (out[-1][-1].c8 - out[-1][-1].f8)) * DEC <= OFF_TOL
+                and not _voiced_gap(out[-1][-1].c8, g[0].c8)):
             out[-1].extend(g)
         else:
             out.append(g)
@@ -569,10 +579,8 @@ def status_of(sc: dict, wrong_max: float, mode: str = "pa") -> str:
 
 def _locate_cut(y: np.ndarray, rend: Render, left: Piece, right: Piece, chl: Channel, chr_: Channel) -> int:
     """Split sample between two pieces minimising the residual of left-model-then-right-model."""
-    # windows are 1 s long, so the cut sits within ~1 s of either piece boundary (and the
-    # boundaries can overlap when a straddling window was attributed to one side)
-    lo = max(left.c0, min(left.c1, right.c0) - FS)
-    hi = min(right.c1, max(left.c1, right.c0) + FS)
+    lo = max(0, left.c0, min(left.c1, right.c0) - FS)
+    hi = min(len(y), right.c1, max(left.c1, right.c0) + FS)
     if hi - lo < 64:
         return (left.c1 + right.c0) // 2
     n = hi - lo
@@ -587,6 +595,75 @@ def _locate_cut(y: np.ndarray, rend: Render, left: Piece, right: Piece, chl: Cha
     el, er = e
     J = np.concatenate([[0.0], np.cumsum(el)]) + (er.sum() - np.concatenate([[0.0], np.cumsum(er)]))
     return lo + int(np.argmin(J))
+
+
+def _locate_bounds(y: np.ndarray, rend: Render, left: Piece, right: Piece, chl: Channel, chr_: Channel) -> tuple[int, int]:
+    """Find (k_left, k_right) between consecutive pieces. Returns k_left == k_right for a direct
+    cut, or k_left < k_right when uncancelled foreign audio sits between left and right."""
+    pad = FS
+    box = np.ones(960) / 960
+    if right.c0 - left.c1 > GAP_UNMATCHED:
+        lo_l, hi_l = max(0, left.c0, left.c1 - FS), min(len(y), right.c1, left.c1 + FS)
+        k_l = left.c1
+        if hi_l - lo_l >= 64:
+            nl = hi_l - lo_l
+            vl, = warp([rend.voice], left.f(np.arange(lo_l - pad, hi_l + pad)) - rend.base)
+            rl = _band(y[lo_l:hi_l] - chl.predict(vl)[pad:pad + nl])
+            ybl = _band(y[lo_l:hi_l])
+            el = np.convolve(rl * rl, box, mode="same")
+            eyl = np.convolve(ybl * ybl, box, mode="same")
+            eul = 0.70 * eyl + 0.02 * float(np.mean(ybl * ybl))
+            k_l = lo_l + int(np.argmin(np.concatenate([[0.0], np.cumsum(el - eul)])))
+        lo_r, hi_r = max(0, left.c0, right.c0 - FS), min(len(y), right.c1, right.c0 + FS)
+        k_r = right.c0
+        if hi_r - lo_r >= 64:
+            nr = hi_r - lo_r
+            vr, = warp([rend.voice], right.f(np.arange(lo_r - pad, hi_r + pad)) - rend.base)
+            rr = _band(y[lo_r:hi_r] - chr_.predict(vr)[pad:pad + nr])
+            ybr = _band(y[lo_r:hi_r])
+            er = np.convolve(rr * rr, box, mode="same")
+            eyr = np.convolve(ybr * ybr, box, mode="same")
+            eur = 0.70 * eyr + 0.02 * float(np.mean(ybr * ybr))
+            k_r = lo_r + int(np.argmin(np.concatenate([[0.0], np.cumsum(eur - er)])))
+        return (k_l, k_r) if k_r > k_l else (left.c1, right.c0)
+
+    lo = max(0, left.c0, min(left.c1, right.c0) - FS)
+    hi = min(len(y), right.c1, max(left.c1, right.c0) + FS)
+    if hi - lo < 64:
+        k = (left.c1 + right.c0) // 2
+        return k, k
+    n = hi - lo
+    nn = np.arange(lo - pad, hi + pad)
+    raw, sm = [], []
+    for p, ch in ((left, chl), (right, chr_)):
+        v, = warp([rend.voice], p.f(nn) - rend.base)
+        pred = ch.predict(v)[pad:pad + n]
+        r = _band(y[lo:hi] - pred)
+        r2 = r * r
+        raw.append(r2)
+        sm.append(np.convolve(r2, box, mode="same"))
+    rl2, rr2 = raw
+    el, er = sm
+    J = np.concatenate([[0.0], np.cumsum(el)]) + (er.sum() - np.concatenate([[0.0], np.cumsum(er)]))
+    k_single = lo + int(np.argmin(J))
+
+    yb = _band(y[lo:hi])
+    yb2 = yb * yb
+    ey = np.convolve(yb2, box, mode="same")
+    eu = 0.70 * ey + 0.02 * float(np.mean(yb2))
+    dL = np.concatenate([[0.0], np.cumsum(el - eu)])
+    dR = np.concatenate([[0.0], np.cumsum(er - eu)])
+    best_i = np.minimum.accumulate(dL)
+    j = int(np.argmin(best_i - dR))
+    i = int(np.argmin(dL[:j + 1]))
+    if j - i >= int(0.5 * FS):
+        ks = int(np.clip(k_single - lo, i, j))
+        yy = float(np.sum(yb2[i:j]))
+        rr = float(np.sum(rl2[i:ks]) + np.sum(rr2[ks:j]))
+        cancel_db = 10.0 * np.log10((yy + 1e-30) / (rr + 1e-30))
+        if cancel_db < 2.5 and yy / (j - i) >= 1e-3 * float(np.mean(yb2)):
+            return lo + i, lo + j
+    return k_single, k_single
 
 
 def _span_cancel_db(clip, rend, span: "Piece", ch: Channel, model: "Piece") -> float:
@@ -619,7 +696,8 @@ def _absorb_blips(clip, rend, pieces, chans, channel):
         L, M, R = pieces[i - 1], pieces[i], pieces[i + 1]
         if abs(L.off(M.c0) - R.off(M.c0)) <= OFF_TOL:
             ref_ch = chans[i - 1] if (L.c1 - L.c0) >= (R.c1 - R.c0) else chans[i + 1]
-            own, nb = _span_cancel_db(clip, rend, M, ref_ch, M), _span_cancel_db(clip, rend, M, ref_ch, L)
+            span_m = Piece(c0=min(L.c1, M.c0), c1=max(M.c1, R.c0), a=L.a, b=L.b)
+            own, nb = _span_cancel_db(clip, rend, M, ref_ch, M), _span_cancel_db(clip, rend, span_m, ref_ch, L)
             if nb >= MATCH_MIN_DB and nb >= own - BLIP_DB:
                 L.c1 = R.c1
                 L.n_win += M.n_win + R.n_win
@@ -637,6 +715,9 @@ def _absorb_blips(clip, rend, pieces, chans, channel):
             for dom, dom_ch, sub, sub_is_right in pairs:
                 f_sub0, f_sub1 = dom.f(sub.c0), dom.f(sub.c1)
                 if f_sub0 < rend.base or f_sub1 > rend.base + len(rend.voice):
+                    continue
+                gap = Piece(c0=max(L.c0, min(L.c1, R.c0) - FS // 2), c1=min(R.c1, max(L.c1, R.c0) + FS // 2), a=dom.a, b=dom.b)
+                if _span_cancel_db(clip, rend, gap, dom_ch, dom) < MATCH_MIN_DB:
                     continue
                 own = _span_cancel_db(clip, rend, sub, dom_ch, sub)
                 nb = _span_cancel_db(clip, rend, sub, dom_ch, dom)
@@ -667,15 +748,12 @@ def _split_pieces(clip, rend, pieces, chans, channel=None):
     while True:
         for p, (a, b) in zip(pieces, spans):
             p.c0, p.c1 = a, b
-        cuts = []
+        bounds = []
         for i in range(len(pieces) - 1):
             L, R = pieces[i], pieces[i + 1]
-            # straddler windows dropped around a cut leave up to ~1.5 s with no match; only a
-            # longer gap is treated as audio that isn't from the venue
-            cuts.append(None if R.c0 - L.c1 > GAP_UNMATCHED else _locate_cut(clip, rend, L, R, chans[i], chans[i + 1]))
-        for i, k in enumerate(cuts):
-            if k is not None:
-                pieces[i].c1, pieces[i + 1].c0 = k, k
+            bounds.append(_locate_bounds(clip, rend, L, R, chans[i], chans[i + 1]))
+        for i, (kl, kr) in enumerate(bounds):
+            pieces[i].c1, pieces[i + 1].c0 = kl, kr
         for p in pieces:
             p.c0, p.c1 = max(0, p.c0), min(len(clip), p.c1)
         bad = [i for i, p in enumerate(pieces) if p.c1 - p.c0 < MIN_PIECE_S * FS]
@@ -686,7 +764,9 @@ def _split_pieces(clip, rend, pieces, chans, channel=None):
         while 0 < i < len(pieces):
             L, R = pieces[i - 1], pieces[i]
             (l0, l1), (r0, r1) = spans[i - 1], spans[i]
-            if r0 - l1 <= GAP_UNMATCHED and abs(L.off(r0) - R.off(r0)) <= EDIT_MIN:
+            gap = Piece(c0=max(l0, min(l1, r0) - FS // 2), c1=min(r1, max(l1, r0) + FS // 2), a=L.a, b=L.b)
+            if (r0 - l1 <= GAP_UNMATCHED and abs(L.off(r0) - R.off(r0)) <= EDIT_MIN
+                    and _span_cancel_db(clip, rend, gap, chans[i - 1], L) >= MATCH_MIN_DB):
                 if (r1 - r0) > (l1 - l0):
                     L.a, L.b = R.a, R.b
                 L.psr = max(L.psr, R.psr)
@@ -794,7 +874,7 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
         if R.c0 > L.c1:  # unmatched audio between the pieces
             edits.append({"kind": "unmatched", "clip_t": L.c1 / FS, "clip_t_end": R.c0 / FS,
                           "duration_s": (R.c0 - L.c1) / FS})
-            jump = (R.f(R.c0) - L.f(L.c1)) - (R.c0 - L.c1)
+            jump = R.f(R.c0) - L.f(L.c1)
         else:
             jump = R.f(at) - L.f(at)
         if abs(jump) >= EDIT_MIN:
