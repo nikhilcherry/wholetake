@@ -91,12 +91,21 @@ def _start_mock_verdict_server():
                 self._send(404, {"error": "not found"}, cors=False)
                 return
             length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 65536:
+                self._send(400, {"error": "invalid request body length"}, cors=False)
+                return
             body = json.loads(self.rfile.read(length).decode("utf-8"))
             url = body.get("url", "")
             if not isinstance(url, str) or not url.startswith(("http://", "https://")):
                 self._send(400, {"error": "invalid url"}, cors=False)
                 return
-            job_id = "deadbeefcafebabe"
+            if any(h in url for h in ("127.0.0.1", "localhost", "169.254.169.254", "[::1]")):
+                self._send(400, {"error": "SSRF blocked: loopback or private address not allowed"}, cors=False)
+                return
+            if "trigger-error" in url:
+                job_id = "errjob0000000001"
+            else:
+                job_id = "deadbeefcafebabe"
             jobs[job_id] = {
                 "id": job_id,
                 "url": url,
@@ -117,33 +126,38 @@ def _start_mock_verdict_server():
                     return
                 poll_counts[job_id] = poll_counts.get(job_id, 0) + 1
                 if poll_counts[job_id] >= 2:
-                    job["status"] = "done"
-                    job["result"] = {
-                        "verdict_id": job_id,
-                        "page_url": f"/v/{job_id}",
-                        "detection": {
-                            "stamp": {
-                                "present": True,
-                                "venue": "main-hall",
-                                "recorded_at_utc": "2026-10-31T06:12:07Z",
-                                "layer1_score": 0.96,
-                                "layer2_score": 0.88,
-                                "cuts": [{"at_clip_s": 12.3, "removed_s": 0.6}],
+                    if job_id == "errjob0000000001":
+                        job["status"] = "error"
+                        job["error"] = "detector failed: clip has no audio stream"
+                        job["result"] = None
+                    else:
+                        job["status"] = "done"
+                        job["result"] = {
+                            "verdict_id": job_id,
+                            "page_url": f"/v/{job_id}",
+                            "detection": {
+                                "stamp": {
+                                    "present": True,
+                                    "venue": "main-hall",
+                                    "recorded_at_utc": "2026-10-31T06:12:07Z",
+                                    "layer1_score": 0.96,
+                                    "layer2_score": 0.88,
+                                    "cuts": [{"at_clip_s": 12.3, "removed_s": 0.6}],
+                                },
+                                "witness": {
+                                    "verdict": "cut",
+                                    "stream": "aje",
+                                    "removed": [
+                                        {
+                                            "after_clip_s": 12.3,
+                                            "seq": 41,
+                                            "src_s": [45.4, 46.0],
+                                            "words": "not",
+                                        }
+                                    ],
+                                },
                             },
-                            "witness": {
-                                "verdict": "cut",
-                                "stream": "aje",
-                                "removed": [
-                                    {
-                                        "after_clip_s": 12.3,
-                                        "seq": 41,
-                                        "src_s": [45.4, 46.0],
-                                        "words": "not",
-                                    }
-                                ],
-                            },
-                        },
-                    }
+                        }
                 self._send(200, job, cors=True)
                 return
             self._send(404, {"error": "not found"}, cors=True)
@@ -253,11 +267,265 @@ const api = require({json.dumps(str(api_path))});
         httpd.server_close()
 
 
+def test_readme_completeness() -> None:
+    readme_path = EXT_DIR / "README.md"
+    assert readme_path.is_file(), "extension/README.md missing"
+    text = readme_path.read_text(encoding="utf-8")
+    assert len(text.strip()) >= 400, "extension/README.md is too short"
+
+    required_tokens = [
+        "chrome://extensions",
+        "Developer mode",
+        "Load unpacked",
+        "edge://extensions",
+        "about:debugging#/runtime/this-firefox",
+        "Load Temporary Add-on",
+        "http://127.0.0.1:8790",
+        "Check this clip with Wholetake",
+        "/api/verdict",
+        "CORS",
+        "SSRF",
+        "host_permissions",
+        "400",
+        "404",
+    ]
+    for token in required_tokens:
+        assert token in text, f"extension/README.md missing required onboarding/troubleshooting info: {token!r}"
+
+    lower = text.lower()
+    for platform in ("youtube", "instagram", "x.com"):
+        assert platform in lower, f"extension/README.md missing platform usage reference: {platform!r}"
+    for topic in ("offline", "tunnel", "zero"):
+        assert topic in lower, f"extension/README.md missing topic: {topic!r}"
+
+
+def _assert_safe_ext_relpath(rel_path: str, must_exist: bool = False) -> Path:
+    assert isinstance(rel_path, str) and rel_path.strip(), "empty asset path reference"
+    assert not rel_path.startswith(("/", "\\", "http://", "https://")), f"asset path must be relative: {rel_path}"
+    resolved = (EXT_DIR / rel_path).resolve()
+    assert resolved.is_relative_to(EXT_DIR.resolve()), f"asset path escapes extension/: {rel_path}"
+    if must_exist or resolved.exists():
+        assert resolved.is_file(), f"referenced asset missing on disk: {rel_path}"
+        assert resolved.stat().st_size > 0, f"referenced asset is empty: {rel_path}"
+    return resolved
+
+
+def test_asset_and_html_references() -> None:
+    manifest_path = EXT_DIR / "manifest.json"
+    assert manifest_path.is_file(), "extension/manifest.json missing"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    # Always-required core files
+    _assert_safe_ext_relpath("api.js", must_exist=True)
+    _assert_safe_ext_relpath("README.md", must_exist=True)
+
+    bg = manifest.get("background", {})
+    if bg.get("service_worker"):
+        _assert_safe_ext_relpath(bg["service_worker"])
+    for script_rel in bg.get("scripts", []):
+        _assert_safe_ext_relpath(script_rel)
+
+    action = manifest.get("action", {})
+    if action.get("default_popup"):
+        _assert_safe_ext_relpath(action["default_popup"])
+    for _sz, icon_rel in (action.get("default_icon") or {}).items():
+        _assert_safe_ext_relpath(icon_rel, must_exist=True)
+    for _sz, icon_rel in (manifest.get("icons") or {}).items():
+        _assert_safe_ext_relpath(icon_rel, must_exist=True)
+
+    for cs in manifest.get("content_scripts", []):
+        for js_rel in cs.get("js", []):
+            _assert_safe_ext_relpath(js_rel)
+        for css_rel in cs.get("css", []):
+            _assert_safe_ext_relpath(css_rel)
+
+    # Validate all local <script src="..."> and <link href="..."> references in any HTML files in extension/
+    attr_pat = re.compile(r"<(?:script|link)\b[^>]*(?:src|href)=['\"]([^'\"]+)['\"]", re.IGNORECASE)
+    for html_file in sorted(EXT_DIR.rglob("*.html")):
+        html_text = html_file.read_text(encoding="utf-8")
+        refs = attr_pat.findall(html_text)
+        assert refs, f"{html_file.name} has no script or stylesheet references"
+        for ref in refs:
+            if ref.startswith(("http://", "https://", "data:", "#")):
+                continue
+            clean_ref = ref.split("?", 1)[0].split("#", 1)[0]
+            target = (html_file.parent / clean_ref).resolve()
+            assert target.is_relative_to(EXT_DIR.resolve()), f"HTML reference escapes extension/: {ref}"
+            assert target.is_file(), f"{html_file.name} references missing file: {ref}"
+            assert target.stat().st_size > 0, f"{html_file.name} references empty file: {ref}"
+
+    # Validate any importScripts(...) calls in JS files point to existing files in extension/
+    import_pat = re.compile(r"importScripts\(\s*['\"]([^'\"]+)['\"]\s*\)")
+    for js_file in sorted(EXT_DIR.rglob("*.js")):
+        js_text = js_file.read_text(encoding="utf-8")
+        for imp in import_pat.findall(js_text):
+            _assert_safe_ext_relpath(imp, must_exist=True)
+
+
+def test_cors_and_error_edge_cases() -> None:
+    import urllib.error
+    from verdict.service import VerdictManager, make_handler
+
+    api_path = EXT_DIR / "api.js"
+    assert api_path.is_file(), "extension/api.js missing"
+
+    # Part 1: Test api.js against mock server edge cases (400 SSRF, 404 unknown job, status: 'error', offline)
+    mock_httpd = _start_mock_verdict_server()
+    mock_port = mock_httpd.server_address[1]
+    mock_base = f"http://127.0.0.1:{mock_port}"
+
+    try:
+        node_bin = shutil.which("node")
+        if node_bin:
+            tmp_dir = Path(tempfile.mkdtemp())
+            try:
+                runner = tmp_dir / "run_edge_cases.js"
+                runner.write_text(
+                    f"""
+const assert = require('assert');
+const api = require({json.dumps(str(api_path))});
+
+(async () => {{
+  const baseUrl = {json.dumps(mock_base)};
+
+  // 1. 400 SSRF rejection (loopback / metadata URL)
+  const ssrfRes = await api.submitClip(baseUrl, 'http://127.0.0.1:8790/secret.wav');
+  assert.strictEqual(ssrfRes.ok, false);
+  assert.strictEqual(ssrfRes.status, 400);
+  assert.ok(!ssrfRes.offline);
+  assert.ok(String(ssrfRes.error || '').toLowerCase().includes('ssrf') || String(ssrfRes.error || '').length > 0);
+
+  // 2. 404 unknown job on getVerdict and pollVerdict
+  const get404 = await api.getVerdict(baseUrl, 'nonexistent_job_999');
+  assert.strictEqual(get404.ok, false);
+  assert.strictEqual(get404.status, 404);
+
+  const poll404 = await api.pollVerdict(baseUrl, 'nonexistent_job_999', {{ intervalMs: 10, timeoutMs: 500 }});
+  assert.strictEqual(poll404.ok, false);
+  assert.strictEqual(poll404.status, 404);
+
+  // 3. Job transitioning to status: 'error'
+  const subErr = await api.submitClip(baseUrl, 'https://example.com/trigger-error.mp4');
+  assert.strictEqual(subErr.ok, true);
+  assert.strictEqual(subErr.id, 'errjob0000000001');
+
+  const pollErr = await api.pollVerdict(baseUrl, subErr.id, {{ intervalMs: 10, timeoutMs: 2000 }});
+  const errJob = pollErr.job || {{ status: 'error', error: pollErr.error }};
+  assert.strictEqual(errJob.status, 'error');
+  const errMsg = String(pollErr.error || errJob.error || '');
+  assert.ok(errMsg.includes('detector failed'), 'expected detector failed message, got: ' + errMsg);
+
+  const errSummary = api.formatVerdictSummary(errJob, baseUrl);
+  assert.ok(errSummary && typeof errSummary === 'object');
+
+  // 4. Offline / unreachable server handling on getVerdict and pollVerdict
+  const offlineGet = await api.getVerdict('http://127.0.0.1:1', 'deadbeefcafebabe', {{
+    fetchImpl: async () => {{ throw new Error('network down'); }}
+  }});
+  assert.strictEqual(offlineGet.ok, false);
+  assert.strictEqual(offlineGet.offline, true);
+
+  const offlinePoll = await api.pollVerdict('http://127.0.0.1:1', 'deadbeefcafebabe', {{
+    intervalMs: 10,
+    timeoutMs: 200,
+    fetchImpl: async () => {{ throw new Error('network down'); }}
+  }});
+  assert.strictEqual(offlinePoll.ok, false);
+  assert.strictEqual(offlinePoll.offline, true);
+}})().catch(err => {{
+  console.error(err);
+  process.exit(1);
+}});
+""",
+                    encoding="utf-8",
+                )
+                proc = subprocess.run([node_bin, str(runner)], capture_output=True, text=True, timeout=15)
+                assert proc.returncode == 0, f"node edge-case test failed: {proc.stderr or proc.stdout}"
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+    finally:
+        mock_httpd.shutdown()
+        mock_httpd.server_close()
+
+    # Part 2: E2E verification against real verdict.service.VerdictManager + make_handler
+    tmp_service_dir = Path(tempfile.mkdtemp())
+    mgr = None
+    real_httpd = None
+    try:
+        wroot = tmp_service_dir / "witness"
+        vdir = tmp_service_dir / "verdicts"
+        wroot.mkdir(parents=True, exist_ok=True)
+        vdir.mkdir(parents=True, exist_ok=True)
+
+        def failing_fetch(_url: str) -> dict:
+            raise RuntimeError("simulated fetch failure: unsupported media stream")
+
+        mgr = VerdictManager(
+            witness_root=wroot,
+            verdicts_dir=vdir,
+            fetch_fn=failing_fetch,
+            start_worker=False,
+        )
+        real_httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(mgr))
+        t = threading.Thread(target=real_httpd.serve_forever, daemon=True)
+        t.start()
+        rbase = f"http://127.0.0.1:{real_httpd.server_address[1]}"
+
+        # 2a. POST /api/verdict with loopback/metadata URL -> 400 SSRFError and cors=False
+        for bad_url in ("http://127.0.0.1:8790/private.wav", "http://169.254.169.254/latest/meta-data/", "file:///etc/passwd"):
+            req = urllib.request.Request(
+                f"{rbase}/api/verdict",
+                data=json.dumps({"url": bad_url}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                raise AssertionError(f"expected HTTP 400 SSRF rejection for {bad_url}")
+            except urllib.error.HTTPError as e:
+                assert e.code == 400, f"expected 400 for {bad_url}, got {e.code}"
+                assert e.headers.get("Access-Control-Allow-Origin") is None, "POST /api/verdict must set cors=False"
+                err_payload = json.loads(e.read().decode("utf-8"))
+                assert isinstance(err_payload.get("error"), str) and err_payload["error"]
+
+        # 2b. GET /api/verdict/<unknown> -> 404 and cors=True
+        try:
+            urllib.request.urlopen(f"{rbase}/api/verdict/unknownjob123456", timeout=5)
+            raise AssertionError("expected HTTP 404 for unknown job")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404, f"expected 404, got {e.code}"
+            assert e.headers.get("Access-Control-Allow-Origin") == "*", "GET /api/verdict/<id> must set cors=True"
+            err_payload = json.loads(e.read().decode("utf-8"))
+            assert err_payload.get("error") == "verdict job not found"
+
+        # 2c. Job transitioning to status: 'error' via VerdictManager.process_one
+        submitted = mgr.submit("https://example.com/broken_clip.mp4", allow_local=True)
+        err_job_id = submitted["id"]
+        mgr.process_one(err_job_id)
+
+        with urllib.request.urlopen(f"{rbase}/api/verdict/{err_job_id}", timeout=5) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+            job_doc = json.loads(resp.read().decode("utf-8"))
+        assert job_doc["status"] == "error"
+        assert "simulated fetch failure" in (job_doc.get("error") or "")
+    finally:
+        if real_httpd is not None:
+            real_httpd.shutdown()
+            real_httpd.server_close()
+        if mgr is not None:
+            mgr.close()
+        shutil.rmtree(tmp_service_dir, ignore_errors=True)
+
+
 def run_all() -> int:
     tests = [
         ("manifest_schema", test_manifest_schema),
+        ("readme_completeness", test_readme_completeness),
+        ("asset_and_html_references", test_asset_and_html_references),
         ("no_secrets_in_extension", test_no_secrets_in_extension),
         ("api_js_and_http_contract", test_api_js_and_http_contract),
+        ("cors_and_error_edge_cases", test_cors_and_error_edge_cases),
     ]
     failed = 0
     for name, fn in tests:
