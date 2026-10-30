@@ -423,7 +423,7 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
               "tempo": 1.0, "pieces": [], "gaps": [], "foreign_insertions": [], "lead_in_s": None, "outro_s": None,
               "decisive_words_removed": [], "clip_transcript": " ".join(w.raw for w in _dedup_raw(cw)),
               "text_pieces": len(tp), "timing_ms": tm}
-    if not regions:
+    if not regions or len(Fc) == 0:
         tm["acoustic_ms"] = (time.time() - t3) * 1e3
         return _done(result, t0)
     alpha = _tempo_refine(Fc, Fw, regions, alpha0, alpha_t is not None)

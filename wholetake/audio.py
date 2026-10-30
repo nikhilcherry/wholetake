@@ -70,11 +70,12 @@ def logmel(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def features(x: np.ndarray) -> np.ndarray:
     """(frames, 40) float32 unit-norm channel-normalised log-mel (zero rows in silence)."""
-    mel, energy = logmel(x)
-    if len(mel) == 0:
+    x = np.asarray(x, dtype=np.float64).ravel()
+    if len(x) == 0:
         return np.zeros((0, NMELS), dtype=np.float32)
+    mel, energy = logmel(x)
     mel = mel - uniform_filter1d(mel, size=int(CMVN_S * FPS), axis=0, mode="nearest")
     mel /= np.linalg.norm(mel, axis=1, keepdims=True) + 1e-9
-    loud = np.percentile(energy, 95) if len(energy) else 0.0
+    loud = np.percentile(energy, 95)
     mel[energy < loud - SILENCE_DB] = 0.0
     return mel.astype(np.float32)
