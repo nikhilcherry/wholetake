@@ -976,13 +976,20 @@ def fuse(doc: dict) -> dict:
 
     edits, w = merge_edits(L)
     warns += w
-    # where & when: L1 (sample precise) > L2 (+-20 ms) > witness
+    # where & when: L1 (sample precise) > L2 (+-20 ms) > witness; stamp-locked layers beat content_match fallbacks
     rec, prec, src = None, None, None
-    for k, p in (("l1", 0.01), ("l2", 0.02), ("wt", 0.1)):
-        st = L.get(k) or {}
-        ok = st.get("status") in ("present", "likely", "inconclusive") or (k != "l2" and st.get("content_match"))
-        if ok and st.get("recorded_at_unix") is not None:
-            rec, prec, src = st["recorded_at_unix"], p, k
+    for allow_content in (False, True):
+        for k, p in (("l1", 0.01), ("l2", 0.02), ("wt", 0.1)):
+            st = L.get(k) or {}
+            ok = (
+                st.get("status") in ("present", "likely", "inconclusive")
+                if not allow_content
+                else (k != "l2" and st.get("content_match"))
+            )
+            if ok and st.get("recorded_at_unix") is not None:
+                rec, prec, src = st["recorded_at_unix"], p, k
+                break
+        if rec is not None:
             break
     l1r, l2r = (L.get("l1") or {}).get("recorded_at_unix"), (L.get("l2") or {}).get("recorded_at_unix")
     l2_time_mismatch = (
@@ -1455,12 +1462,19 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         L["l2"] = _stage("skipped", "s3", "L1 already locked (pass --confirm to run L2 too)")
 
     if sl is not None:
-        for k in ("l1", "l2", "wt"):
-            st = L.get(k) or {}
-            ok = st.get("status") in ("present", "likely", "inconclusive") or (k != "l2" and st.get("content_match"))
-            if ok and st.get("recorded_at_unix") is not None:
-                rec = st["recorded_at_unix"]
-                doc["_wall_offset"] = sl.wall(rec) - rec
+        for allow_content in (False, True):
+            for k in ("l1", "l2", "wt"):
+                st = L.get(k) or {}
+                ok = (
+                    st.get("status") in ("present", "likely", "inconclusive")
+                    if not allow_content
+                    else (k != "l2" and st.get("content_match"))
+                )
+                if ok and st.get("recorded_at_unix") is not None:
+                    rec = st["recorded_at_unix"]
+                    doc["_wall_offset"] = sl.wall(rec) - rec
+                    break
+            if "_wall_offset" in doc:
                 break
     fuse(doc)
     if sl is not None:
