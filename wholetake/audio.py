@@ -31,7 +31,8 @@ def decode(path: str, sr: int = SR) -> np.ndarray:
     """Any audio/video file -> mono float32 at `sr`."""
     cmd = [ffmpeg_exe(), "-v", "error", "-nostdin", "-i", path, "-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"]
     out = subprocess.run(cmd, capture_output=True, check=True).stdout
-    return np.frombuffer(out, dtype="<f4").copy()
+    arr = np.frombuffer(out, dtype="<f4").copy()
+    return np.nan_to_num(arr, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _mel_fb() -> np.ndarray:
@@ -55,7 +56,7 @@ MEL_FB = _mel_fb()
 
 def logmel(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """(frames, 40) raw log-mel in dB and per-frame energy in dB; frame k is centred at k / FPS s."""
-    x = np.asarray(x, dtype=np.float64).ravel()
+    x = np.nan_to_num(np.asarray(x, dtype=np.float64).ravel(), copy=True, nan=0.0, posinf=0.0, neginf=0.0)
     if len(x) == 0:
         return np.zeros((0, NMELS), dtype=np.float64), np.zeros((0,), dtype=np.float64)
     if len(x) < NFFT:
@@ -71,7 +72,7 @@ def logmel(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def features(x: np.ndarray) -> np.ndarray:
     """(frames, 40) float32 unit-norm channel-normalised log-mel (zero rows in silence)."""
-    x = np.asarray(x, dtype=np.float64).ravel()
+    x = np.nan_to_num(np.asarray(x, dtype=np.float64).ravel(), copy=True, nan=0.0, posinf=0.0, neginf=0.0)
     if len(x) == 0:
         return np.zeros((0, NMELS), dtype=np.float32)
     mel, energy = logmel(x)
