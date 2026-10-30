@@ -161,16 +161,52 @@ def _decode_ffmpeg(path: str) -> tuple[np.ndarray, int, str]:
 
 def _downmix(x: np.ndarray, warnings: list[str], sr: int = FS) -> np.ndarray:
     """Average two channels unless they would cancel (inverted/independent mics): then keep
-    the channel with more 300-3400 Hz energy."""
+    the channel with more 300-3400 Hz energy. For >2 channels, pick the highest-energy speech
+    channel as reference and average correlated active channels."""
     if x.shape[1] == 1:
         return x[:, 0]
-    L, R = x[:, 0], x[:, 1]
-    if np.allclose(L, R):
-        return L.copy()
     sos = SOS_L1
     if sr != FS and sr > 700:
         from scipy.signal import butter
         sos = butter(4, [300.0, min(3400.0, 0.45 * sr)], btype="bandpass", fs=sr, output="sos")
+    if x.shape[1] > 2:
+        n, ch = x.shape
+        blk = max(1, sr // 2)
+        nb = n // blk
+        if nb >= 2:
+            xb = x[:nb * blk].reshape(nb, blk, ch)
+            e = np.sum(np.mean((xb - xb.mean(axis=1, keepdims=True)) ** 2, axis=1), axis=1)
+            emax = float(np.max(e))
+            if emax > 0:
+                keep = np.flatnonzero(e >= 0.05 * emax)
+                if len(keep) > 60:
+                    top = np.argsort(e[keep])[-60:]
+                    keep = np.sort(keep[top])
+                xa = xb[keep].reshape(-1, ch)
+            else:
+                xa = x[:min(n, 10 * sr)]
+        else:
+            xa = x
+        yb = sosfilt(sos, xa, axis=0)
+        ech = np.sum(yb * yb, axis=0)
+        ref = int(np.argmax(ech))
+        if ech[ref] <= 0:
+            return np.mean(x, axis=1)
+        ref_y = yb[:, ref]
+        ref_e = float(ech[ref])
+        keep_ch = [ref]
+        for c in range(ch):
+            if c == ref or ech[c] < 0.05 * ref_e:
+                continue
+            rho_c = float(np.sum(ref_y * yb[:, c]) / (np.sqrt(ref_e * float(ech[c])) + 1e-20))
+            if rho_c >= 0.3:
+                keep_ch.append(c)
+        if len(keep_ch) == 1:
+            return x[:, ref].copy()
+        return np.mean(x[:, keep_ch], axis=1)
+    L, R = x[:, 0], x[:, 1]
+    if np.allclose(L, R):
+        return L.copy()
     n = len(L)
     blk = max(1, sr // 2)
     nb = n // blk
@@ -224,7 +260,7 @@ def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
         raise ClipError("DECODE_FAILED", "non-finite audio samples")
     warnings: list[str] = []
     ch = x.shape[1]
-    m = _downmix(x[:, :2], warnings, sr=sr)
+    m = _downmix(x, warnings, sr=sr)
     if sr != FS:
         g = int(np.gcd(sr, FS))
         up, down = FS // g, sr // g
