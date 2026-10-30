@@ -1663,13 +1663,20 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
             l1.get("status") == "present" or l1.get("content_match")
         ):
             c = l1["recorded_at_unix"]
-            l2_window = (int(c - 30), int(c + clip.duration_s * 1.6 + 30))
+            w0, w1 = int(c - 30), int(c + clip.duration_s * 1.6 + 30)
+            if sl is not None:
+                w0, w1 = max(sl.t_start, w0), min(sl.t_end, w1)
+                l2_window = (w0, w1) if w0 < w1 else (sl.t_start, sl.t_end)
+            else:
+                l2_window = (w0, w1)
         elif sl is not None:
             l2_window = (sl.t_start, sl.t_end)
             wt = L.get("wt") or {}
             if sl.feed_offset_s is not None and sl.env_z >= ENV_Z_MIN:
                 c = sl.t_start + sl.feed_offset_s
-                l2_window = (int(c - 60), int(c + clip.duration_s * 1.6 + 60))
+                w0, w1 = max(sl.t_start, int(c - 60)), min(sl.t_end, int(c + clip.duration_s * 1.6 + 60))
+                if w0 < w1:
+                    l2_window = (w0, w1)
             elif wt.get("content_match") and wt.get("recorded_at_unix") is not None:
                 c = wt["recorded_at_unix"]
                 w0, w1 = max(sl.t_start, int(c - 120)), min(sl.t_end, int(c + clip.duration_s * 1.6 + 120))
@@ -1679,12 +1686,12 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
                 w0, w1 = max(sl.t_start, int(t_around - 1800)), min(sl.t_end, int(t_around + 600))
                 if w0 < w1:
                     l2_window = (w0, w1)
-            if l2_window[1] - l2_window[0] > L2_MAX_WINDOW_S:
-                l2_window = (l2_window[1] - L2_MAX_WINDOW_S, l2_window[1])
         elif t_around is not None:
             l2_window = (int(t_around - 1800), int(t_around + 600))
         else:
             l2_skip = "no session or time window to search"
+        if l2_window is not None and l2_window[1] - l2_window[0] > L2_MAX_WINDOW_S:
+            l2_window = (l2_window[1] - L2_MAX_WINDOW_S, l2_window[1])
     explicit_l2 = layers != "auto" and "l2" in want
     l1_locked = L["l1"].get("status") == "present"
     run_l2_now = l2_skip is None and (explicit_l2 or (layers == "auto" and (not l1_locked or confirm)))
