@@ -229,9 +229,11 @@ function Invoke-LocalDemo {
             }
             foreach ($pf in @($botPidFile, $verdictPidFile, $simxPidFile)) {
                 if (Test-Path -LiteralPath $pf) {
-                    $rawPid = (Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue).Trim()
-                    if ($rawPid) {
-                        Stop-Process -Id ([int]$rawPid) -Force -ErrorAction SilentlyContinue
+                    $content = Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue
+                    $rawPid = if ($null -ne $content) { $content.Trim() } else { "" }
+                    $parsedPid = 0
+                    if ([int]::TryParse($rawPid, [ref]$parsedPid) -and $parsedPid -gt 0) {
+                        Stop-Process -Id $parsedPid -Force -ErrorAction SilentlyContinue
                     }
                     Remove-Item -LiteralPath $pf -Force -ErrorAction SilentlyContinue
                 }
@@ -242,9 +244,23 @@ function Invoke-LocalDemo {
         '^status$' {
             foreach ($name in @("simx", "verdict", "bot")) {
                 $pf = Join-Path $RootDir "logs/$name.pid"
+                $running = $false
+                $parsedPid = 0
                 if (Test-Path -LiteralPath $pf) {
-                    $rawPid = (Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue).Trim()
-                    Write-Output "local-demo $name pid=$rawPid"
+                    $content = Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue
+                    $rawPid = if ($null -ne $content) { $content.Trim() } else { "" }
+                    if ([int]::TryParse($rawPid, [ref]$parsedPid) -and $parsedPid -gt 0) {
+                        $proc = Get-Process -Id $parsedPid -ErrorAction SilentlyContinue
+                        if ($null -ne $proc) {
+                            $running = $true
+                        }
+                    }
+                    if (-not $running) {
+                        Remove-Item -LiteralPath $pf -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                if ($running) {
+                    Write-Output "local-demo $name pid=$parsedPid"
                 } else {
                     Write-Output "local-demo $name stopped"
                 }

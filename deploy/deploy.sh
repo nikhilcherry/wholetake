@@ -215,8 +215,8 @@ run_local_demo() {
             for pf in "$bot_pid_file" "$verdict_pid_file" "$simx_pid_file"; do
                 if [[ -f "$pf" ]]; then
                     local pid
-                    pid="$(cat "$pf" 2>/dev/null || true)"
-                    if [[ -n "$pid" ]]; then
+                    pid="$(tr -d '[:space:]' < "$pf" 2>/dev/null || true)"
+                    if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 0 ]]; then
                         kill "$pid" 2>/dev/null || true
                     fi
                     rm -f "$pf"
@@ -228,7 +228,14 @@ run_local_demo() {
             for name in simx verdict bot; do
                 local pf="$ROOT_DIR/logs/${name}.pid"
                 if [[ -f "$pf" ]]; then
-                    echo "local-demo $name pid=$(cat "$pf")"
+                    local pid
+                    pid="$(tr -d '[:space:]' < "$pf" 2>/dev/null || true)"
+                    if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 0 ]] && kill -0 "$pid" 2>/dev/null; then
+                        echo "local-demo $name pid=$pid"
+                    else
+                        rm -f "$pf"
+                        echo "local-demo $name stopped"
+                    fi
                 else
                     echo "local-demo $name stopped"
                 fi
