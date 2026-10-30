@@ -195,6 +195,8 @@ def band_power(cbp: tuple[np.ndarray, np.ndarray], n_samples: int, tempo: float 
 def features(P: np.ndarray) -> np.ndarray:
     """Band power rows -> weighted, normalised features (same rows)."""
     P = np.nan_to_num(np.asarray(P, dtype=np.float64), nan=0.0, posinf=np.finfo(np.float64).max / (L2_NBANDS * 2), neginf=0.0)
+    if len(P) == 0:
+        return np.zeros((0, L2_NBANDS))
     if P.size > 0 and P.max() > 1e100:
         P = P / P.max()
     P = np.maximum(P, P.max() * 1e-9 + 1e-20)
@@ -221,7 +223,7 @@ def features(P: np.ndarray) -> np.ndarray:
 def reverb_variant(F: np.ndarray, tau: float) -> np.ndarray:
     """G[t] = sum_k h[k] F[t+k], h[k] = exp(-k/tau): correlating G with T equals correlating F
     with T smeared causally by the room's energy decay."""
-    if tau <= 0:
+    if tau <= 0 or len(F) == 0:
         return F
     k = np.arange(int(6 * tau) + 1)
     h = np.exp(-k / tau)
