@@ -125,9 +125,9 @@ function Initialize-RuntimeEnv {
 
     $keyFile = Join-Path $RootDir "keys/venue.key"
     $needKey = $true
-    if (Test-Path -LiteralPath $keyFile) {
+    if (Test-Path -LiteralPath $keyFile -PathType Leaf) {
         $existing = (Get-Content -LiteralPath $keyFile -Raw -ErrorAction SilentlyContinue)
-        if ($existing -and $existing.Trim().Length -ge 64) {
+        if ($null -ne $existing -and [System.Text.RegularExpressions.Regex]::IsMatch($existing.Trim(), '\A[0-9a-fA-F]{64}\z')) {
             $needKey = $false
         }
     }

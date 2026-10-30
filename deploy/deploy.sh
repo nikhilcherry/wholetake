@@ -127,7 +127,11 @@ ensure_runtime_env() {
         "$ROOT_DIR/keys"
 
     local key_file="$ROOT_DIR/keys/venue.key"
-    if [[ ! -s "$key_file" ]]; then
+    local existing_key=""
+    if [[ -f "$key_file" ]]; then
+        existing_key="$(tr -d '[:space:]' < "$key_file" 2>/dev/null || true)"
+    fi
+    if [[ ! "$existing_key" =~ ^[0-9a-fA-F]{64}$ ]]; then
         local hex_key
         hex_key="$(generate_hex32 | tr -d '\r\n ')"
         printf '%s\n' "$hex_key" > "$key_file"
