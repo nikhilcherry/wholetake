@@ -1,0 +1,110 @@
+services:
+  simx:
+    build: .
+    command: ["python", "-m", "simx", "serve", "--host", "0.0.0.0", "--port", "8791", "--data", "/app/data/simx"]
+    ports:
+      - "8791:8791"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SIMX_PORT=8791
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8791/2/tweets/search/recent?query=wholetake', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  verdict:
+    build: .
+    command: ["python", "-m", "verdict", "serve", "--host", "0.0.0.0", "--port", "8790"]
+    ports:
+      - "8790:8790"
+    depends_on:
+      - simx
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs:ro
+      - ./keys:/app/keys:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WT_VERDICT_PORT=8790
+      - WT_FETCH_ALLOW_HOSTS=simx:8791,127.0.0.1:8791
+      - WT_DETECT=python -m verdict.wt_adapter
+      - WT_WITNESS_ROOT=/app/data/witness
+      - WT_VERDICTS_DIR=/app/data/verdicts
+      - ROOMSTAMP_LOG_DIR=/app/logs
+      - ROOMSTAMP_KEY_FILE=/app/keys/venue.key
+      - WHOLETAKE_ASR=none
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/api/verdicts?limit=1', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  bot:
+    build: .
+    profiles:
+      - daemons
+    command: ["python", "-m", "bot", "run"]
+    depends_on:
+      - verdict
+      - simx
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - X_API_BASE=http://simx:8791
+      - X_BOT_TOKEN=sim-wholetake
+      - WT_VERDICT_URL=http://verdict:8790
+      - WT_PAGE_BASE=http://127.0.0.1:8790
+      - BOT_POLL_S=5
+      - BOT_INCLUDE_LINK=1
+    restart: unless-stopped
+
+  chain:
+    build: .
+    profiles:
+      - daemons
+    command: ["python", "-m", "ingest.chain", "--loop", "/app/data/witness"]
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  anchor:
+    build: .
+    profiles:
+      - daemons
+    command: ["python", "-m", "anchor", "run", "/app/data/witness"]
+    volumes:
+      - ./data:/app/data
+      - ./keys:/app/keys:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BASE_SEPOLIA_RPC_URL=${BASE_SEPOLIA_RPC_URL:-}
+    restart: unless-stopped
+
+  wt-cli:
+    build: .
+    profiles:
+      - cli
+    entrypoint: ["python", "-m", "verdict"]
+    command: ["check", "--help"]
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs:ro
+      - ./keys:/app/keys:ro
+      - ./testdata:/app/testdata:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WHOLETAKE_ASR=none
+      - WT_WITNESS_ROOT=/app/data/witness
+      - WT_VERDICTS_DIR=/app/data/verdicts
+      - ROOMSTAMP_LOG_DIR=/app/logs
+      - ROOMSTAMP_KEY_FILE=/app/keys/venue.key

@@ -434,5 +434,209 @@ class TestDeployScriptsAndRunbook(unittest.TestCase):
             self.assertTrue(exists, f"Referenced CLI module 'python -m {mod}' does not exist in repo")
 
 
+def _parse_yaml_scalar_or_inline(val: str):
+    val = val.strip()
+    if not val:
+        return ""
+    if val.startswith("[") and val.endswith("]"):
+        try:
+            return json.loads(val)
+        except Exception:
+            inner = val[1:-1].strip()
+            if not inner:
+                return []
+            return [p.strip().strip('"\'') for p in inner.split(",")]
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        return val[1:-1]
+    return val
+
+
+def _parse_docker_compose(text: str) -> dict:
+    """Lightweight stdlib indentation parser for docker-compose.yml."""
+    result: dict = {"services": {}}
+    in_services = False
+    cur_service: str | None = None
+    cur_field: str | None = None
+
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.strip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        stripped = raw_line.strip()
+
+        if indent == 0:
+            in_services = stripped == "services:"
+            cur_service = None
+            cur_field = None
+            continue
+
+        if not in_services:
+            continue
+
+        if indent == 2 and stripped.endswith(":"):
+            cur_service = stripped[:-1].strip()
+            result["services"][cur_service] = {}
+            cur_field = None
+            continue
+
+        if cur_service is None:
+            continue
+
+        svc_obj = result["services"][cur_service]
+
+        if indent == 4:
+            if ":" in stripped and not stripped.startswith("-"):
+                k, v = stripped.split(":", 1)
+                k = k.strip()
+                v = v.strip()
+                cur_field = k
+                if v:
+                    svc_obj[k] = _parse_yaml_scalar_or_inline(v)
+                else:
+                    svc_obj[k] = None
+            continue
+
+        if indent >= 6 and cur_field is not None:
+            if stripped.startswith("- "):
+                item_val = _parse_yaml_scalar_or_inline(stripped[2:])
+                if not isinstance(svc_obj.get(cur_field), list):
+                    svc_obj[cur_field] = []
+                svc_obj[cur_field].append(item_val)
+            elif ":" in stripped:
+                sub_k, sub_v = stripped.split(":", 1)
+                sub_k = sub_k.strip()
+                sub_v = _parse_yaml_scalar_or_inline(sub_v)
+                if not isinstance(svc_obj.get(cur_field), dict):
+                    svc_obj[cur_field] = {}
+                svc_obj[cur_field][sub_k] = sub_v
+
+    return result
+
+
+def _resolve_module_exists(mod_name: str) -> bool:
+    parts = mod_name.split(".")
+    pkg_dir = REPO_ROOT.joinpath(*parts)
+    py_file = (
+        REPO_ROOT.joinpath(*parts[:-1], f"{parts[-1]}.py")
+        if len(parts) > 1
+        else REPO_ROOT / f"{parts[0]}.py"
+    )
+    return (pkg_dir.is_dir() and (pkg_dir / "__main__.py").is_file()) or py_file.is_file()
+
+
+class TestDockerComposeStack(unittest.TestCase):
+    def test_docker_compose_core_and_optional_services(self) -> None:
+        compose_path = REPO_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.is_file(), "docker-compose.yml must exist at repo root")
+        raw_text = compose_path.read_text(encoding="utf-8")
+        parsed = _parse_docker_compose(raw_text)
+        services = parsed.get("services", {})
+
+        expected_services = {"simx", "verdict", "bot", "chain", "anchor", "wt-cli"}
+        self.assertTrue(
+            expected_services.issubset(set(services.keys())),
+            f"Missing services in docker-compose.yml: {expected_services - set(services.keys())}",
+        )
+
+        # Core services started by default (no profiles)
+        for core in ("simx", "verdict"):
+            svc = services[core]
+            self.assertEqual(svc.get("build"), ".")
+            self.assertNotIn("profiles", svc, f"Core service {core} must not be gated by profiles")
+            self.assertEqual(svc.get("restart"), "unless-stopped")
+            self.assertIn("healthcheck", svc, f"Core service {core} must define a healthcheck")
+            hc = svc["healthcheck"]
+            self.assertIsInstance(hc, dict)
+            hc_test_str = " ".join(hc.get("test", [])) if isinstance(hc.get("test"), list) else str(hc.get("test"))
+            self.assertIn("urllib.request", hc_test_str)
+
+        # simx specifics
+        simx = services["simx"]
+        simx_cmd = " ".join(simx["command"]) if isinstance(simx.get("command"), list) else str(simx.get("command"))
+        self.assertIn("python -m simx serve --host 0.0.0.0 --port 8791 --data /app/data/simx", simx_cmd)
+        self.assertIn("8791:8791", simx.get("ports", []))
+        self.assertIn("./data:/app/data", simx.get("volumes", []))
+        simx_hc = " ".join(simx["healthcheck"]["test"])
+        self.assertIn("http://127.0.0.1:8791/2/tweets/search/recent?query=wholetake", simx_hc)
+
+        # verdict specifics
+        verdict = services["verdict"]
+        verdict_cmd = " ".join(verdict["command"]) if isinstance(verdict.get("command"), list) else str(verdict.get("command"))
+        self.assertIn("python -m verdict serve --host 0.0.0.0 --port 8790", verdict_cmd)
+        self.assertIn("8790:8790", verdict.get("ports", []))
+        self.assertIn("simx", verdict.get("depends_on", []))
+        for v_mount in ("./data:/app/data", "./logs:/app/logs:ro", "./keys:/app/keys:ro"):
+            self.assertIn(v_mount, verdict.get("volumes", []), f"verdict missing volume {v_mount}")
+
+        verdict_env = verdict.get("environment", [])
+        env_map = dict(item.split("=", 1) for item in verdict_env if "=" in item)
+        self.assertEqual(env_map.get("WT_FETCH_ALLOW_HOSTS"), "simx:8791,127.0.0.1:8791")
+        verdict_hc = " ".join(verdict["healthcheck"]["test"])
+        self.assertIn("http://127.0.0.1:8790/api/verdicts?limit=1", verdict_hc)
+
+        # Optional daemons profile
+        for daemon_name in ("bot", "chain", "anchor"):
+            d_svc = services[daemon_name]
+            self.assertIn("daemons", d_svc.get("profiles", []), f"{daemon_name} must use profile 'daemons'")
+            self.assertIn("./data:/app/data", d_svc.get("volumes", []))
+
+        self.assertIn("verdict", services["bot"].get("depends_on", []))
+        self.assertIn("simx", services["bot"].get("depends_on", []))
+        self.assertIn("./keys:/app/keys:ro", services["anchor"].get("volumes", []))
+
+        # Optional cli profile
+        wt_cli = services["wt-cli"]
+        self.assertIn("cli", wt_cli.get("profiles", []))
+        for cli_mount in ("./data:/app/data", "./logs:/app/logs:ro", "./keys:/app/keys:ro", "./testdata:/app/testdata:ro"):
+            self.assertIn(cli_mount, wt_cli.get("volumes", []))
+
+        # Ensure no hardcoded 64-hex secrets or private API tokens in docker-compose.yml
+        hex64_re = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])")
+        self.assertIsNone(hex64_re.search(raw_text), "docker-compose.yml must not contain hardcoded 64-hex secrets")
+        self.assertNotIn("sk-", raw_text, "docker-compose.yml must not contain hardcoded API keys")
+
+    def test_compose_and_systemd_entrypoints_resolve(self) -> None:
+        compose_path = REPO_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.is_file())
+        parsed = _parse_docker_compose(compose_path.read_text(encoding="utf-8"))
+        services = parsed.get("services", {})
+
+        compose_modules: set[str] = set()
+        for svc_name, svc in services.items():
+            for field in ("command", "entrypoint"):
+                val = svc.get(field)
+                if not val:
+                    continue
+                tokens = val if isinstance(val, list) else str(val).split()
+                for idx, tok in enumerate(tokens[:-1]):
+                    if tok == "-m":
+                        compose_modules.add(tokens[idx + 1])
+            for env_item in svc.get("environment", []):
+                for m in re.findall(r"(?:python3?|\./py)\s+-m\s+([a-zA-Z0-9_.]+)", str(env_item)):
+                    compose_modules.add(m)
+
+        self.assertGreaterEqual(len(compose_modules), 5, "Expected >=5 python -m entrypoints in docker-compose.yml")
+        for mod in compose_modules:
+            self.assertTrue(
+                _resolve_module_exists(mod),
+                f"docker-compose.yml module 'python -m {mod}' does not resolve in repository",
+            )
+
+        service_files = list((REPO_ROOT / "deploy").glob("*.service"))
+        self.assertGreaterEqual(len(service_files), 5, "Expected systemd *.service files in deploy/")
+        systemd_modules: set[str] = set()
+        for sf in service_files:
+            text = sf.read_text(encoding="utf-8")
+            for m in re.findall(r"(?:python3?|/python|\./py|/py)\s+-m\s+([a-zA-Z0-9_.]+)", text):
+                systemd_modules.add(m)
+
+        self.assertGreaterEqual(len(systemd_modules), 5, "Expected >=5 python -m entrypoints in deploy/*.service")
+        for mod in systemd_modules:
+            self.assertTrue(
+                _resolve_module_exists(mod),
+                f"systemd unit module 'python -m {mod}' does not resolve in repository",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
