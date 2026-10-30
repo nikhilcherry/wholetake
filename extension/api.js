@@ -349,7 +349,61 @@ async function _origGetVerdict(baseUrl, jobId, options) {
     });
   }
 
-  async function pollVerdict(serviceUrl, jobId, options = {}) {
+  async function pollVerdict(serviceUrl, jobId, options) {
+    const rawOpts = options && typeof options === "object" ? options : {};
+    const rawInterval =
+      rawOpts.intervalMs !== undefined && rawOpts.intervalMs !== null && rawOpts.intervalMs !== ""
+        ? Number(rawOpts.intervalMs)
+        : NaN;
+    const rawTimeout =
+      rawOpts.timeoutMs !== undefined && rawOpts.timeoutMs !== null && rawOpts.timeoutMs !== ""
+        ? Number(rawOpts.timeoutMs)
+        : NaN;
+    const safeIntervalMs = Number.isFinite(rawInterval) ? Math.max(10, rawInterval) : 500;
+    const safeTimeoutMs = Number.isFinite(rawTimeout) ? Math.max(0, rawTimeout) : 60000;
+    if (safeTimeoutMs <= 0) {
+      return Promise.resolve(
+        getVerdict(serviceUrl, jobId, Object.assign({}, rawOpts, { timeoutMs: 200 }))
+      ).then(function (res) {
+        if (res && res.job && typeof rawOpts.onProgress === "function") {
+          try {
+            rawOpts.onProgress(res.job);
+          } catch (_e) {}
+        }
+        if (!res || !res.ok) {
+          return res || { ok: false, status: 0, error: "pollVerdict failed" };
+        }
+        const st = res.job && res.job.status;
+        if (st === "done") {
+          return { ok: true, status: res.status || 200, job: res.job };
+        }
+        if (st === "error") {
+          return {
+            ok: false,
+            status: res.status || 200,
+            job: res.job,
+            error: (res.job && res.job.error) || "verdict job failed",
+          };
+        }
+        return {
+          ok: false,
+          status: 408,
+          job: res.job || null,
+          error: "Polling timed out waiting for verdict",
+          timedOut: true,
+        };
+      });
+    }
+    return _origPollVerdict(
+      serviceUrl,
+      jobId,
+      Object.assign({}, rawOpts, {
+        intervalMs: safeIntervalMs,
+        timeoutMs: safeTimeoutMs,
+      })
+    );
+  }
+  async function _origPollVerdict(serviceUrl, jobId, options = {}) {
   const opts = options && typeof options === 'object' ? options : {};
   const intervalMs = Number(opts.intervalMs) > 0 ? Number(opts.intervalMs) : 1000;
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 60000;
