@@ -262,18 +262,32 @@ def group_pieces(wins: list[Win]) -> list[list[Win]]:
 
 def _fine_lag(y: np.ndarray, x: np.ndarray, c: int, f_guess: float, n: int = FS, span: int = 48) -> tuple[float, float]:
     """Sub-sample feed position of clip window [c, c+n) near f_guess (48 kHz, band-limited)."""
-    f0 = int(round(f_guess)) - span
-    if c < 0 or c + n > len(y) or f0 < 0 or f0 + n + 2 * span > len(x):
+    fg = int(round(f_guess))
+    f0 = fg - span
+    if c < 0:
         return np.nan, 0.0
-    seg = y[c:c + n] * np.hanning(n)
-    ref = x[f0:f0 + n + 2 * span]
-    nfft = 1 << (len(ref) + n).bit_length()
+    if c + n <= len(y) and f0 >= 0 and f0 + n + 2 * span <= len(x):
+        n_eff = n
+        n_lags = 2 * span + 1
+    else:
+        f0 = max(0, f0)
+        n_eff = min(n, len(y) - c, len(x) - max(f0, fg) - span)
+        if n_eff < min(n, FS // 2):
+            n_eff = min(n, len(y) - c, len(x) - max(f0, fg))
+        if n_eff < max(64, min(n, FS // 2)):
+            return np.nan, 0.0
+        n_lags = min(fg + span, len(x) - n_eff) - f0 + 1
+        if n_lags <= 0:
+            return np.nan, 0.0
+    seg = y[c:c + n_eff] * np.hanning(n_eff)
+    ref = x[f0:f0 + n_eff + n_lags - 1]
+    nfft = 1 << (len(ref) + n_eff).bit_length()
     X = sfft.rfft(ref, nfft) * sfft.rfft(seg, nfft).conj()
     f = np.fft.rfftfreq(nfft, 1 / FS)
     band = (f >= 300) & (f <= 3400)
     mag = np.abs(X)
     X = np.where(band, X / np.maximum(mag, 0.05 * np.median(mag[band]) + 1e-30), 0.0)
-    cc = sfft.irfft(X, nfft)[:2 * span + 1]
+    cc = sfft.irfft(X, nfft)[:n_lags]
     k = int(np.argmax(np.abs(cc)))
     if cc[k] < 0:
         cc = -cc
