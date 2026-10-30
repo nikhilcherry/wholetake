@@ -738,10 +738,15 @@ def _run_l1_minimal(clip: Clip, sess: Session, key: bytes, feed: np.ndarray, t: 
     l1 = r["l1"]
     frac = l1["frac_z5"] if l1["clip_z"] >= detect.CLIP_Z_MIN else 0.0
     status = "present" if frac >= 0.20 else ("inconclusive" if frac >= 0.05 else "absent")
-    rec_at = sess.t_start - r["lag_samples"] / FS
+    content_match = bool(r["speech_removed_db"] > 6.0)
+    if content_match or status == "present":
+        rec_at = sess.t_start - r["lag_samples"] / FS
+        vt0, vt1 = rec_at, rec_at + clip.duration_s
+    else:
+        rec_at = vt0 = vt1 = None
     st = _stage(status, "s1-minimal", detect.verdict(r), z=l1["clip_z"], recorded_at_unix=rec_at,
-                venue_t_start=rec_at, venue_t_end=rec_at + clip.duration_s,
-                content_match=r["speech_removed_db"] > 6.0, integrity_checked=False, detail=r)
+                venue_t_start=vt0, venue_t_end=vt1,
+                content_match=content_match, integrity_checked=False, detail=r)
     st["elapsed_s"] = round(time.time() - t, 2)
     return st
 
@@ -920,8 +925,11 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
     l1_st = layers.get("l1") or {}
     l2_st = layers.get("l2") or {}
     l1r, l2r = l1_st.get("recorded_at_unix"), l2_st.get("recorded_at_unix")
+    l1_time_ok = l1_st.get("status") == "present" or (
+        l1_st.get("status") == "inconclusive" and bool(l1_st.get("content_match"))
+    )
     l2_time_mismatch = (
-        l1_st.get("status") in ("present", "inconclusive")
+        l1_time_ok
         and l2_st.get("status") in ("present", "likely")
         and l1r is not None and l2r is not None
         and abs(l1r - l2r) > L1_TIME_MISMATCH_S
@@ -1017,19 +1025,26 @@ def fuse(doc: dict) -> dict:
     for allow_content in (False, True):
         for k, p in (("l1", 0.01), ("l2", 0.02), ("wt", 0.1)):
             st = L.get(k) or {}
-            ok = (
-                st.get("status") in ("present", "likely", "inconclusive")
-                if not allow_content
-                else (k != "l2" and st.get("content_match"))
-            )
+            if not allow_content:
+                if k == "l1":
+                    ok = st.get("status") == "present" or (
+                        st.get("status") == "inconclusive" and bool(st.get("content_match"))
+                    )
+                else:
+                    ok = st.get("status") in ("present", "likely", "inconclusive")
+            else:
+                ok = k != "l2" and bool(st.get("content_match"))
             if ok and st.get("recorded_at_unix") is not None:
                 rec, prec, src = st["recorded_at_unix"], p, k
                 break
         if rec is not None:
             break
     l1r, l2r = (L.get("l1") or {}).get("recorded_at_unix"), (L.get("l2") or {}).get("recorded_at_unix")
+    l1_time_ok = s["l1"] == "present" or (
+        s["l1"] == "inconclusive" and bool((L.get("l1") or {}).get("content_match"))
+    )
     l2_time_mismatch = (
-        s["l1"] in ("present", "inconclusive")
+        l1_time_ok
         and s["l2"] in ("present", "likely")
         and l1r is not None and l2r is not None
         and abs(l1r - l2r) > L1_TIME_MISMATCH_S
@@ -1148,7 +1163,7 @@ def fuse(doc: dict) -> dict:
     v.update({"recorded_here": recorded, "integrity": integrity, "headline": head, "x_reply_text": x,
               "recorded_at_unix": wall, "recorded_at_iso": iso_time(wall) if wall is not None else None,
               "recorded_at_precision_s": prec, "recorded_at_source": src,
-              "tempo_ratio": (L.get("l2") or {}).get("tempo") if (s["l2"] in ("present", "likely") and not l2_time_mismatch) else (1.0 if s["l1"] in ("present", "inconclusive") else None),
+              "tempo_ratio": (L.get("l2") or {}).get("tempo") if (s["l2"] in ("present", "likely") and not l2_time_mismatch) else (1.0 if l1_time_ok else None),
               "edits": edits, "content_match": bool(content),
               "confidence": {k: s[k] for k in ("l1", "l2", "wt")}})
     doc["pending_layers"] = pending
@@ -1240,6 +1255,8 @@ def _proof(sl: SessionLog | None, doc: dict, clip: Clip) -> dict:
         for k in cand_keys:
             st = doc["layers"].get(k) or {}
             if st.get("status") == "absent":
+                continue
+            if k == "l1" and not (st.get("content_match") or st.get("status") == "present"):
                 continue
             vt0, vt1 = st.get("venue_t_start"), st.get("venue_t_end")
             if vt0 is not None and vt1 is not None:
@@ -1436,7 +1453,7 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     if "wt" in want and witness_root:
         l1r = (
             L["l1"].get("recorded_at_unix")
-            if (L["l1"].get("status") in ("present", "inconclusive") or L["l1"].get("content_match"))
+            if (L["l1"].get("status") == "present" or L["l1"].get("content_match"))
             else None
         )
         try:
@@ -1468,7 +1485,7 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     if l2_skip is None:
         l1 = L["l1"]
         if l1.get("recorded_at_unix") is not None and (
-            l1.get("status") in ("present", "inconclusive") or l1.get("content_match")
+            l1.get("status") == "present" or l1.get("content_match")
         ):
             c = l1["recorded_at_unix"]
             l2_window = (int(c - 30), int(c + clip.duration_s * 1.6 + 30))
@@ -1515,11 +1532,15 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         for allow_content in (False, True):
             for k in ("l1", "l2", "wt"):
                 st = L.get(k) or {}
-                ok = (
-                    st.get("status") in ("present", "likely", "inconclusive")
-                    if not allow_content
-                    else (k != "l2" and st.get("content_match"))
-                )
+                if not allow_content:
+                    if k == "l1":
+                        ok = st.get("status") == "present" or (
+                            st.get("status") == "inconclusive" and bool(st.get("content_match"))
+                        )
+                    else:
+                        ok = st.get("status") in ("present", "likely", "inconclusive")
+                else:
+                    ok = k != "l2" and bool(st.get("content_match"))
                 if ok and st.get("recorded_at_unix") is not None:
                     rec = st["recorded_at_unix"]
                     doc["_wall_offset"] = sl.wall(rec) - rec
