@@ -900,9 +900,10 @@ def iso_time(t: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", tt) + f".{ms:03d}{sign}{hh:02d}:{mm:02d}"
 
 
-def fmt_clock(s: float) -> str:
-    s = int(round(max(0.0, s)))
-    return f"{s // 60}:{s % 60:02d}"
+def fmt_clock(s: float | None) -> str:
+    v = float(s) if (s is not None and np.isfinite(s)) else 0.0
+    sec = int(round(max(0.0, v)))
+    return f"{sec // 60}:{sec % 60:02d}"
 
 
 def _kinds_compatible(k1: str | None, k2: str | None) -> bool:
@@ -943,17 +944,19 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
             if name in ("l1", "wt") and not st.get("content_match"):
                 continue
             pool.extend(e for e in st["edits"] if e.get("kind") != "pause_trim")
-    pool.sort(key=lambda e: (rank.get(e.get("source"), 9), e.get("clip_t", 0)))
+    pool.sort(key=lambda e: (rank.get(e.get("source"), 9), float(e.get("clip_t") or 0.0)))
     out: list[dict] = []
     for e in pool:
+        ct_e = float(e.get("clip_t") or 0.0)
         r_e = e.get("clip_t_range")
-        lo = r_e[0] if (r_e and len(r_e) >= 2 and r_e[0] is not None) else e["clip_t"]
-        hi = r_e[1] if (r_e and len(r_e) >= 2 and r_e[1] is not None) else e["clip_t"]
+        lo = float(r_e[0]) if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[0] is not None) else ct_e
+        hi = float(r_e[1]) if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[1] is not None) else ct_e
         dup = None
         for k in out:
+            ct_k = float(k.get("clip_t") or 0.0)
             r_k = k.get("clip_t_range")
-            k_lo = r_k[0] if (r_k and len(r_k) >= 2 and r_k[0] is not None) else k["clip_t"]
-            k_hi = r_k[1] if (r_k and len(r_k) >= 2 and r_k[1] is not None) else k["clip_t"]
+            k_lo = float(r_k[0]) if (isinstance(r_k, (list, tuple)) and len(r_k) >= 2 and r_k[0] is not None) else ct_k
+            k_hi = float(r_k[1]) if (isinstance(r_k, (list, tuple)) and len(r_k) >= 2 and r_k[1] is not None) else ct_k
             if (
                 rank[k["source"]] < rank[e["source"]]
                 and _kinds_compatible(k.get("kind"), e.get("kind"))
@@ -967,10 +970,10 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
         if e["source"] == "wt" and e.get("restored_text") and not dup.get("restored_text"):
             dup["restored_text"] = e["restored_text"]
         if e.get("removed_s") is not None and dup.get("removed_s") is not None \
-                and abs(e["removed_s"] - dup["removed_s"]) > max(0.15, 3 * e.get("precision_s", 0.1)):
+                and abs(e["removed_s"] - dup["removed_s"]) > max(0.15, 3 * (e.get("precision_s") or 0.1)):
             warns.append(f"edit_size_mismatch: {dup['source']} says {dup['removed_s']:.2f} s, "
-                         f"{e['source']} says {e['removed_s']:.2f} s near {fmt_clock(dup['clip_t'])}; using {dup['source']}")
-    out.sort(key=lambda e: e["clip_t"])
+                         f"{e['source']} says {e['removed_s']:.2f} s near {fmt_clock(dup.get('clip_t'))}; using {dup['source']}")
+    out.sort(key=lambda e: float(e.get("clip_t") or 0.0))
     for e in out:
         e.setdefault("restored_text", None)
         e.setdefault("restored_audio", None)
@@ -978,32 +981,36 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
 
 
 def _edit_summary(edits: list[dict]) -> str:
-    cuts = [e for e in edits if e["kind"] == "removed"]
-    other = [e for e in edits if e["kind"] not in ("removed", "pause_trim")]
+    cuts = [e for e in edits if e.get("kind") == "removed"]
+    other = [e for e in edits if e.get("kind") not in ("removed", "pause_trim")]
     parts = []
     if len(cuts) == 1:
         e = cuts[0]
         rem = float(e.get("removed_s") or 0.0)
+        ct = float(e.get("clip_t") or 0.0)
         if e.get("source") == "l2":
-            a, b = e["clip_t_range"]
+            r_e = e.get("clip_t_range")
+            a = r_e[0] if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[0] is not None) else ct
+            b = r_e[1] if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[1] is not None) else ct
             parts.append(f"About {rem:.1f} s removed between {fmt_clock(a)} and {fmt_clock(b)}")
         else:
-            parts.append(f"{rem:.2f} s removed at {fmt_clock(e['clip_t'])}")
+            parts.append(f"{rem:.2f} s removed at {fmt_clock(ct)}")
     elif cuts:
         tot = sum(float(e.get("removed_s") or 0.0) for e in cuts)
-        parts.append(f"{len(cuts)} cuts ({tot:.2f} s removed in total, first at {fmt_clock(cuts[0]['clip_t'])})")
+        parts.append(f"{len(cuts)} cuts ({tot:.2f} s removed in total, first at {fmt_clock(cuts[0].get('clip_t'))})")
     for e in other:
-        if e["kind"] == "repeated":
+        ct = float(e.get("clip_t") or 0.0)
+        if e.get("kind") == "repeated":
             rem = float(e.get("removed_s") or 0.0)
-            parts.append(f"{-rem:.2f} s repeated at {fmt_clock(e['clip_t'])}")
-        elif e["kind"] == "replaced" and e.get("source_offset_s") is not None:
-            off = e["source_offset_s"]
-            parts.append(f"{(e.get('duration_s') or 0):.2f} s at {fmt_clock(e['clip_t'])} replaced with audio from "
+            parts.append(f"{-rem:.2f} s repeated at {fmt_clock(ct)}")
+        elif e.get("kind") == "replaced" and e.get("source_offset_s") is not None:
+            off = float(e["source_offset_s"])
+            parts.append(f"{float(e.get('duration_s') or 0.0):.2f} s at {fmt_clock(ct)} replaced with audio from "
                          f"{abs(off):.1f} s {'later' if off > 0 else 'earlier'} in the talk")
-        elif e["kind"] == "foreign":
-            parts.append(f"{(e.get('duration_s') or 0):.1f} s not from this venue at {fmt_clock(e['clip_t'])}")
+        elif e.get("kind") == "foreign":
+            parts.append(f"{float(e.get('duration_s') or 0.0):.1f} s not from this venue at {fmt_clock(ct)}")
         else:
-            parts.append(f"{e['kind']} at {fmt_clock(e['clip_t'])}")
+            parts.append(f"{e.get('kind')} at {fmt_clock(ct)}")
     return ". ".join(parts)
 
 
