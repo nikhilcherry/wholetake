@@ -79,13 +79,18 @@ class RandomnessSource:
             self.header, secs = read_log(log)
             lookup = log_randomness(secs)
             self.by_sec = {int(t): lookup(int(t)) for t in secs}
-        if cache_path and os.path.exists(cache_path):
+        if not unanchored and cache_path and os.path.exists(cache_path):
             with open(cache_path, encoding="utf-8") as f:
-                for k, v in json.load(f).items():
-                    b = bytes.fromhex(v) if v is not None else None
-                    if b is not None and len(b) != 32:
-                        raise ValueError("randomness must be 32 bytes")
-                    self.by_round.setdefault(int(k), b)
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("drand cache must be a JSON object")
+            for k, v in data.items():
+                if v is not None and not isinstance(v, str):
+                    raise ValueError("randomness must be a 32-byte hex string")
+                b = bytes.fromhex(v) if v is not None else None
+                if b is not None and len(b) != 32:
+                    raise ValueError("randomness must be 32 bytes")
+                self.by_round.setdefault(int(k), b)
 
     def log_span(self) -> tuple[int, int] | None:
         return (min(self.by_sec), max(self.by_sec) + 1) if self.by_sec else None
