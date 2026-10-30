@@ -74,9 +74,17 @@ _DITHER_0 = sosfilt(SOS_L1, _DITHER)
 _DITHER_SS = sosfilt(SOS_L1, np.tile(_DITHER, 3))[2 * FS:]
 
 
+def _sanitize(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    if not np.isfinite(x).all():
+        x = np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
+    return x
+
+
 def _band(x: np.ndarray) -> np.ndarray:
     # digital silence drives IIR state into denormals (40x slower); a fixed tiny dither avoids it,
     # and subtracting the precomputed dither response keeps silent spans from correlating
+    x = _sanitize(x)
     n = len(x)
     d = np.resize(_DITHER, n)
     y = sosfilt(SOS_L1, x + d)
@@ -351,6 +359,7 @@ def l1_carrier(key: bytes, t0: int, n: int, lookup) -> np.ndarray:
 
 def _voice(x: np.ndarray, key: bytes, t0: int, p: engine.StampParams, lookup, gv: np.ndarray) -> np.ndarray:
     """Vectorised equivalent of the engine's voice path (layer-2 wobble is linear in x)."""
+    x = _sanitize(x)
     if len(x) == 0:
         return np.zeros(0, dtype=np.float64)
     if p.mode == "table":
@@ -369,6 +378,7 @@ def _voice(x: np.ndarray, key: bytes, t0: int, p: engine.StampParams, lookup, gv
 def render_span(feed: np.ndarray, sess: Session, key: bytes, f_lo: float, f_hi: float) -> Render:
     # with the emitter's logged level/gain state the render starts (almost) where it's needed;
     # without it, 10 s of warm-up let the level tracker converge (scale error < 1%)
+    feed = _sanitize(feed)
     max_sec = max(0, (len(feed) - 1) // FS)
     first = min(max_sec, max(0, int(np.floor(f_lo / FS)) - 1))
     ref_rms, gain = sess.state_at(sess.t_start + first)
@@ -796,8 +806,8 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     if spec.key_id(key) != sess.key_id:
         log(f"[s2] note: key id {spec.key_id(key)} != session key id {sess.key_id}")
     mode = sess.params.mode
-    clip = np.asarray(clip, dtype=np.float64)
-    feed = np.asarray(feed, dtype=np.float64)
+    clip = _sanitize(clip)
+    feed = _sanitize(feed)
     if clip.ndim != 1 or feed.ndim != 1:
         raise ValueError("clip and feed must be 1D arrays")
     if len(clip) < FS // 4 or len(feed) < FS // 4:
