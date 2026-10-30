@@ -62,6 +62,7 @@ L2_MAX_WINDOW_S = 2400        # cap blind L2 span (~40 min) to keep FFT memory <
 BUDGET_S = float(os.environ.get("WT_BUDGET_S", 270))   # the verdict service kills us at 300 s
 L2_MIN_CLIP_S = 8.0           # S3 refuses shorter clips
 L1_TIME_MISMATCH_S = 1.0
+FOREIGN_MARGIN_MIN_S = 1.0    # unmatched clip lead-in / tail threshold for a foreign edit
 STATUSES = ("present", "likely", "inconclusive", "absent", "too_short", "skipped", "error", "timeout", "pending")
 
 
@@ -493,6 +494,80 @@ def _read_feed(path: str, s0: int, s1: int) -> np.ndarray:
     return x.mean(axis=1)
 
 
+def _refine_piece_margins(clip_x: np.ndarray, feed: np.ndarray, sess_t_start: int, pieces: list[dict],
+                          lead_in_s: float | None, unmatched_tail_s: float | None) -> tuple[float, float, bool]:
+    """Trim coarse S2 piece boundaries when an unmatched clip lead-in or tail overlaps foreign audio."""
+    lead_in = float(lead_in_s or 0.0)
+    tail = float(unmatched_tail_s or 0.0)
+    if not pieces or (lead_in < 0.4 and tail < 0.4):
+        return lead_in, tail, False
+    ce = _hp_env(_env(clip_x)[0])
+    fe = _hp_env(_env(feed)[0])
+    if len(ce) < 100 or len(fe) < 100:
+        return lead_in, tail, False
+    fps = FS / ENV_HOP
+    trimmed = False
+    if lead_in >= 0.4:
+        p0 = pieces[0]
+        c0_s, c1_s = float(p0["clip_start"]), float(p0["clip_end"])
+        vt0_s = float(p0["venue_t_start"])
+        lag_f = int(round(((vt0_s - sess_t_start) - c0_s) * fps))
+        i0 = min(len(ce) - 1, max(0, int(round((c0_s + min(2.0, 0.25 * (c1_s - c0_s))) * fps))))
+        i1 = min(len(ce), max(i0 + 20, int(round((c1_s - min(1.0, 0.15 * (c1_s - c0_s))) * fps))))
+        j0 = max(0, min(len(fe) - 20, i0 + lag_f))
+        j1 = max(j0 + 20, min(len(fe), i1 + lag_f))
+        rms_c = float(np.sqrt(np.mean(ce[i0:i1] ** 2)) + 1e-9)
+        rms_f = float(np.sqrt(np.mean(fe[j0:j1] ** 2)) + 1e-9)
+        k_lo = max(0, -lag_f, int(round((c0_s - 0.5) * fps)))
+        k_hi = min(len(ce), len(fe) - lag_f, int(round(min(c1_s - 1.0, c0_s + 3.0) * fps)))
+        if k_hi - k_lo >= 20:
+            u = ce[k_lo:k_hi] / rms_c
+            v = fe[k_lo + lag_f:k_hi + lag_f] / rms_f
+            cs = np.concatenate(([0.0], np.cumsum(u * v - 0.25)))
+            new_k0 = k_lo + int(np.argmin(cs))
+            orig_k0 = max(k_lo, int(round(c0_s * fps)))
+            if new_k0 > orig_k0 + 10:
+                tu = ce[orig_k0:new_k0] / rms_c
+                tv = fe[orig_k0 + lag_f:new_k0 + lag_f] / rms_f
+                if float(np.mean(tu * tv)) < 0.35:
+                    new_c0 = new_k0 / fps
+                    delta = new_c0 - c0_s
+                    p0["clip_start"] = round(new_c0, 4)
+                    p0["venue_t_start"] = round(vt0_s + delta, 4)
+                    lead_in = float(p0["clip_start"])
+                    trimmed = True
+    if tail >= 0.4:
+        p_last = pieces[-1]
+        c0_s, c1_s = float(p_last["clip_start"]), float(p_last["clip_end"])
+        vt1_s = float(p_last["venue_t_end"])
+        lag_f = int(round(((vt1_s - sess_t_start) - c1_s) * fps))
+        i0 = min(len(ce) - 1, max(0, int(round((c0_s + min(1.0, 0.15 * (c1_s - c0_s))) * fps))))
+        i1 = min(len(ce), max(i0 + 20, int(round((c1_s - min(2.0, 0.25 * (c1_s - c0_s))) * fps))))
+        j0 = max(0, min(len(fe) - 20, i0 + lag_f))
+        j1 = max(j0 + 20, min(len(fe), i1 + lag_f))
+        rms_c = float(np.sqrt(np.mean(ce[i0:i1] ** 2)) + 1e-9)
+        rms_f = float(np.sqrt(np.mean(fe[j0:j1] ** 2)) + 1e-9)
+        k_lo = max(0, -lag_f, int(round(max(c0_s + 1.0, c1_s - 3.0) * fps)))
+        k_hi = min(len(ce), len(fe) - lag_f, int(round((c1_s + 0.5) * fps)))
+        if k_hi - k_lo >= 20:
+            u = ce[k_lo:k_hi] / rms_c
+            v = fe[k_lo + lag_f:k_hi + lag_f] / rms_f
+            cs = np.concatenate(([0.0], np.cumsum(u * v - 0.25)))
+            new_k1 = k_lo + int(np.argmax(cs))
+            orig_k1 = min(k_hi, int(round(c1_s * fps)))
+            if new_k1 < orig_k1 - 10:
+                tu = ce[new_k1:orig_k1] / rms_c
+                tv = fe[new_k1 + lag_f:orig_k1 + lag_f] / rms_f
+                if float(np.mean(tu * tv)) < 0.35:
+                    new_c1 = new_k1 / fps
+                    delta = c1_s - new_c1
+                    p_last["clip_end"] = round(new_c1, 4)
+                    p_last["venue_t_end"] = round(vt1_s - delta, 4)
+                    tail = max(0.0, float(len(clip_x) / FS - p_last["clip_end"]))
+                    trimmed = True
+    return lead_in, tail, trimmed
+
+
 # ------------------------------------------------------------------------------- stages
 
 def _stage(status: str, impl: str | None = None, summary: str = "", **kw) -> dict:
@@ -550,7 +625,43 @@ def run_l1(clip: Clip, sl: SessionLog, key: bytes, warnings: list[str]) -> tuple
         return _run_l1_minimal(clip, sess, key, feed, t), sl_info
     r = l1verify.verify(clip.x, feed, sess, key, log=lambda *a, **k: None)
     pieces = r.get("pieces") or []
+    lead_in_s = float(r.get("lead_in_s") or 0.0)
+    unmatched_tail_s = float(r.get("unmatched_tail_s") or 0.0)
+    if pieces:
+        lead_in_s, unmatched_tail_s, trimmed = _refine_piece_margins(
+            clip.x, feed, sess.t_start, pieces, lead_in_s, unmatched_tail_s
+        )
+        if trimmed and (lead_in_s >= FOREIGN_MARGIN_MIN_S or unmatched_tail_s >= FOREIGN_MARGIN_MIN_S):
+            sub_s0 = max(0, int(round(pieces[0]["clip_start"] * FS)))
+            sub_s1 = min(len(clip.x), int(round(pieces[-1]["clip_end"] * FS)))
+            if sub_s1 - sub_s0 >= int(MIN_CLIP_S * FS):
+                r_sub = l1verify.verify(clip.x[sub_s0:sub_s1], feed, sess, key, log=lambda *a, **k: None)
+                if r_sub.get("matched") and r_sub.get("pieces") and (
+                    L1_RANK.get(r_sub.get("stamp"), 0) >= L1_RANK.get(r.get("stamp"), 0)
+                ):
+                    sub_off = sub_s0 / FS
+                    for p in r_sub["pieces"]:
+                        p["clip_start"] = round(float(p["clip_start"]) + sub_off, 4)
+                        p["clip_end"] = round(float(p["clip_end"]) + sub_off, 4)
+                    for e in r_sub.get("edits", []):
+                        e["clip_t"] = round(float(e["clip_t"]) + sub_off, 4)
+                        if e.get("clip_t_end") is not None:
+                            e["clip_t_end"] = round(float(e["clip_t_end"]) + sub_off, 4)
+                    r = r_sub
+                    pieces = r["pieces"]
+                    lead_in_s = float(pieces[0]["clip_start"])
+                    unmatched_tail_s = max(0.0, float(clip.duration_s - pieces[-1]["clip_end"]))
+                    r["lead_in_s"] = round(lead_in_s, 4)
+                    r["unmatched_tail_s"] = round(unmatched_tail_s, 4)
     edits = []
+    if pieces and lead_in_s >= FOREIGN_MARGIN_MIN_S:
+        p0 = pieces[0]
+        edits.append({
+            "kind": "foreign", "clip_t": 0.0, "clip_t_range": [0.0, round(lead_in_s, 3)],
+            "removed_s": None, "duration_s": round(lead_in_s, 3),
+            "venue_t_from": p0["venue_t_start"], "venue_t_to": p0["venue_t_start"],
+            "source_offset_s": None, "precision_s": 0.5, "source": "l1",
+        })
     for e in r.get("edits", []):
         kind = {"removed": "removed", "repeated": "repeated", "unmatched": "foreign"}.get(e["kind"], e["kind"])
         ed = {"kind": kind, "clip_t": e["clip_t"], "clip_t_range": [e["clip_t"], e.get("clip_t_end", e["clip_t"])],
@@ -559,16 +670,27 @@ def run_l1(clip: Clip, sl: SessionLog, key: bytes, warnings: list[str]) -> tuple
               "source_offset_s": e.get("source_offset_s"),
               "precision_s": 0.002 if kind in ("removed", "repeated") else 0.5, "source": "l1"}
         edits.append(ed)
+    if pieces and unmatched_tail_s >= FOREIGN_MARGIN_MIN_S:
+        p_last = pieces[-1]
+        c_end = round(float(p_last["clip_end"]), 3)
+        edits.append({
+            "kind": "foreign", "clip_t": c_end, "clip_t_range": [c_end, round(clip.duration_s, 3)],
+            "removed_s": None, "duration_s": round(unmatched_tail_s, 3),
+            "venue_t_from": p_last["venue_t_end"], "venue_t_to": p_last["venue_t_end"],
+            "source_offset_s": None, "precision_s": 0.5, "source": "l1",
+        })
     rec_at = vt0 = vt1 = None
     if pieces:
         p0 = pieces[0]
-        rec_at = p0["venue_t_start"] - p0["clip_start"]
+        rec_at = p0["venue_t_start"] if lead_in_s >= FOREIGN_MARGIN_MIN_S else (p0["venue_t_start"] - p0["clip_start"])
         vt0, vt1 = min(p["venue_t_start"] for p in pieces), max(p["venue_t_end"] for p in pieces)
     zs = [p.get("l1_clip_z") for p in pieces if p.get("l1_clip_z") is not None]
     status = r["stamp"] if r.get("matched") else "absent"
     st = _stage(status, "s2", r.get("verdict", ""), z=max(zs) if zs else None, recorded_at_unix=rec_at,
                 venue_t_start=vt0, venue_t_end=vt1, content_match=bool(r.get("matched")), edits=edits,
-                integrity_checked=True, lead_in_s=r.get("lead_in_s"), unmatched_tail_s=r.get("unmatched_tail_s"),
+                integrity_checked=True,
+                lead_in_s=round(lead_in_s, 4) if pieces else r.get("lead_in_s"),
+                unmatched_tail_s=round(unmatched_tail_s, 4) if pieces else r.get("unmatched_tail_s"),
                 detail=r)
     st["elapsed_s"] = round(time.time() - t, 2)
     return st, sl_info
@@ -879,8 +1001,18 @@ def fuse(doc: dict) -> dict:
     weak = s["l2"] == "likely" or s["l1"] == "inconclusive"
     content = any((L.get(k) or {}).get("content_match") for k in ("l1", "wt"))
     ran = [k for k in ("l1", "l2") if s[k] in ("present", "likely", "inconclusive", "absent")]
-    integrity_layers = [k for k in ("l1", "wt") if (L.get(k) or {}).get("integrity_checked")
-                        and (L.get(k) or {}).get("content_match")]
+    integrity_layers = [
+        k for k in ("l1", "wt")
+        if (L.get(k) or {}).get("integrity_checked")
+        and (L.get(k) or {}).get("content_match")
+        and (
+            k != "l1"
+            or (
+                float((L.get("l1") or {}).get("lead_in_s") or 0.0) < FOREIGN_MARGIN_MIN_S
+                and float((L.get("l1") or {}).get("unmatched_tail_s") or 0.0) < FOREIGN_MARGIN_MIN_S
+            )
+        )
+    ]
 
     if stamp_present:
         recorded = "verified"
