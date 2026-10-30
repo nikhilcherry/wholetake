@@ -12,6 +12,7 @@ the second's first sample hit the DAC). The key itself is never logged, only key
 """
 from __future__ import annotations
 
+import dataclasses
 import gc
 import json
 import math
@@ -67,8 +68,8 @@ class Emitter:
     def __init__(self, key: bytes, params: StampParams, log_dir: str = "logs", wav_in: str | None = None,
                  loop_wav: bool = True, out_device=None, in_device=None, hostapi: str | None = "WASAPI",
                  save_output: bool = False, quiet: bool = False, latency: float | None = None):
-        self.key, self.p, self.log_dir, self.quiet = key, params, log_dir, quiet
-        self.use_input = params.mode in ("pa", "table") and in_device != "none"
+        self.key, self.p, self.log_dir, self.quiet = key, dataclasses.replace(params), log_dir, quiet
+        self.use_input = self.p.mode in ("pa", "table") and in_device != "none"
         self.save_output = save_output
         # Python callbacks occasionally stall 25-40 ms (GIL/GC); WASAPI fills a starved
         # buffer with silence *without* flagging an underflow, so the buffer must be larger
@@ -80,16 +81,16 @@ class Emitter:
             latency = float(latency)
             if not math.isfinite(latency) or latency <= 0.0:
                 raise ValueError(f"latency must be > 0 and finite, got {latency!r}")
-        self.latency = latency if latency is not None else (0.08 if params.mode == "pa" else 0.1)
+        self.latency = latency if latency is not None else (0.08 if self.p.mode == "pa" else 0.1)
         self.hostapi = hostapi
         self.out_dev = find_device(out_device, "output", hostapi)
         self.in_dev = find_device(None if in_device == "none" else in_device, "input", hostapi) if self.use_input else None
-        if params.mode == "table" and not self.use_input and params.l1_floor < 1.0:
+        if self.p.mode == "table" and not self.use_input and self.p.l1_floor < 1.0:
             print("[roomstamp] table mode without a mic: gating off (--l1-floor 1.0), feed will be empty")
-            params.l1_floor = 1.0
+            self.p.l1_floor = 1.0
         self.silent_secs = 0
         self.file_audio = None
-        if params.mode == "file":
+        if self.p.mode == "file":
             if not wav_in:
                 raise SystemExit("--wav-in is required for --mode file")
             self.file_audio = wavio.read(wav_in)
@@ -100,7 +101,7 @@ class Emitter:
         os.makedirs(log_dir, exist_ok=True)
 
         self.drand = DrandCache()
-        self.stamper = engine.Stamper(params)
+        self.stamper = engine.Stamper(self.p)
         self.prepared: dict[int, engine.PreparedSecond] = {}
         self.q: queue.SimpleQueue = queue.SimpleQueue()
         self.n = 0                       # samples emitted
