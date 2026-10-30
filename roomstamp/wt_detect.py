@@ -964,25 +964,65 @@ def _kinds_compatible(k1: str | None, k2: str | None) -> bool:
     return False
 
 
+def _pick_time_source(layers: dict) -> tuple[float | None, float | None, str | None]:
+    """Pick (recorded_at_unix, precision_s, source) ranking 'present' layers above
+    'likely'/'inconclusive' layers, and L1 > L2 > witness within each tier."""
+    order = (("l1", 0.01), ("l2", 0.02), ("wt", 0.1))
+    for k, p in order:
+        st = layers.get(k) or {}
+        ok = st.get("status") == "present" and (k != "wt" or bool(st.get("content_match")))
+        if ok and st.get("recorded_at_unix") is not None:
+            return st["recorded_at_unix"], p, k
+    for k, p in order:
+        st = layers.get(k) or {}
+        if k == "l1":
+            ok = st.get("status") == "inconclusive" and bool(st.get("content_match"))
+        elif k == "l2":
+            ok = st.get("status") in ("likely", "inconclusive")
+        else:
+            ok = st.get("status") in ("likely", "inconclusive") and bool(st.get("content_match"))
+        if ok and st.get("recorded_at_unix") is not None:
+            return st["recorded_at_unix"], p, k
+    for k, p in order:
+        st = layers.get(k) or {}
+        if k != "l2" and bool(st.get("content_match")) and st.get("recorded_at_unix") is not None:
+            return st["recorded_at_unix"], p, k
+    for k, p in order:
+        st = layers.get(k) or {}
+        if st.get("status") in ("present", "likely", "inconclusive") and st.get("recorded_at_unix") is not None:
+            return st["recorded_at_unix"], p, k
+    return None, None, None
+
+
 def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
     """Precise sources win; a coarser edit near a precise one is the same edit."""
     warns = []
     rank = {"l1": 0, "wt": 1, "l2": 2}
-    integrity_covered = any(
-        (layers.get(k) or {}).get("integrity_checked") and (layers.get(k) or {}).get("content_match")
-        for k in ("l1", "wt")
-    )
     l1_st = layers.get("l1") or {}
     l2_st = layers.get("l2") or {}
     l1r, l2r = l1_st.get("recorded_at_unix"), l2_st.get("recorded_at_unix")
     l1_time_ok = l1_st.get("status") == "present" or (
-        l1_st.get("status") == "inconclusive" and bool(l1_st.get("content_match"))
+        l1_st.get("status") == "inconclusive"
+        and bool(l1_st.get("content_match"))
+        and l2_st.get("status") != "present"
     )
     l2_time_mismatch = (
         l1_time_ok
         and l2_st.get("status") in ("present", "likely")
         and l1r is not None and l2r is not None
         and abs(l1r - l2r) > L1_TIME_MISMATCH_S
+    )
+    l1_unverified_mismatch = (
+        l2_st.get("status") == "present"
+        and l1_st.get("status") != "present"
+        and l1r is not None and l2r is not None
+        and abs(l1r - l2r) > L1_TIME_MISMATCH_S
+    )
+    integrity_covered = any(
+        (layers.get(k) or {}).get("integrity_checked")
+        and (layers.get(k) or {}).get("content_match")
+        and not (k == "l1" and l1_unverified_mismatch)
+        for k in ("l1", "wt")
     )
     pool = []
     for name in ("l1", "wt", "l2"):
@@ -1076,28 +1116,13 @@ def fuse(doc: dict) -> dict:
 
     edits, w = merge_edits(L)
     warns += w
-    # where & when: L1 (sample precise) > L2 (+-20 ms) > witness; stamp-locked layers beat content_match fallbacks
-    rec, prec, src = None, None, None
-    for allow_content in (False, True):
-        for k, p in (("l1", 0.01), ("l2", 0.02), ("wt", 0.1)):
-            st = L.get(k) or {}
-            if not allow_content:
-                if k == "l1":
-                    ok = st.get("status") == "present" or (
-                        st.get("status") == "inconclusive" and bool(st.get("content_match"))
-                    )
-                else:
-                    ok = st.get("status") in ("present", "likely", "inconclusive")
-            else:
-                ok = k != "l2" and bool(st.get("content_match"))
-            if ok and st.get("recorded_at_unix") is not None:
-                rec, prec, src = st["recorded_at_unix"], p, k
-                break
-        if rec is not None:
-            break
+    # where & when: present layers beat likely/inconclusive; within each tier L1 (sample precise) > L2 (+-20 ms) > witness
+    rec, prec, src = _pick_time_source(L)
     l1r, l2r = (L.get("l1") or {}).get("recorded_at_unix"), (L.get("l2") or {}).get("recorded_at_unix")
     l1_time_ok = s["l1"] == "present" or (
-        s["l1"] == "inconclusive" and bool((L.get("l1") or {}).get("content_match"))
+        s["l1"] == "inconclusive"
+        and bool((L.get("l1") or {}).get("content_match"))
+        and s["l2"] != "present"
     )
     l2_time_mismatch = (
         l1_time_ok
@@ -1585,24 +1610,9 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         L["l2"] = _stage("skipped", "s3", "L1 already locked (pass --confirm to run L2 too)")
 
     if sl is not None:
-        for allow_content in (False, True):
-            for k in ("l1", "l2", "wt"):
-                st = L.get(k) or {}
-                if not allow_content:
-                    if k == "l1":
-                        ok = st.get("status") == "present" or (
-                            st.get("status") == "inconclusive" and bool(st.get("content_match"))
-                        )
-                    else:
-                        ok = st.get("status") in ("present", "likely", "inconclusive")
-                else:
-                    ok = k != "l2" and bool(st.get("content_match"))
-                if ok and st.get("recorded_at_unix") is not None:
-                    rec = st["recorded_at_unix"]
-                    doc["_wall_offset"] = sl.wall(rec) - rec
-                    break
-            if "_wall_offset" in doc:
-                break
+        rec, _, _ = _pick_time_source(L)
+        if rec is not None:
+            doc["_wall_offset"] = sl.wall(rec) - rec
     fuse(doc)
     if sl is not None:
         doc["proof"] = _proof(sl, doc, clip)
