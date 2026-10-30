@@ -25,15 +25,20 @@ def read(path: str, fs: int = FS) -> np.ndarray:
 
 
 def to_pcm16(x: np.ndarray) -> bytes:
-    return (np.clip(np.asarray(x), -1.0, 32767 / 32768) * 32768.0).astype("<i2").tobytes()
+    arr = np.asarray(x, dtype=np.float64)
+    if arr.ndim != 1:
+        raise ValueError(f"to_pcm16 requires a 1-D mono array, got {arr.ndim}-D shape {arr.shape}")
+    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=-1.0)
+    return (np.clip(arr, -1.0, 32767 / 32768) * 32768.0).astype("<i2").tobytes()
 
 
 def write(path: str, x: np.ndarray, fs: int = FS) -> None:
+    pcm = to_pcm16(x)
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(fs)
-        w.writeframes(to_pcm16(x))
+        w.writeframes(pcm)
 
 
 class StreamWriter:

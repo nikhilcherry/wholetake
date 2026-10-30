@@ -140,6 +140,7 @@ class Emitter:
         else:
             x = np.zeros(frames)
 
+        x = np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
         state = (self.stamper.ref_rms, self.stamper.gain) if pos == 0 else None   # logged: lets a verifier start mid-session
         out, stamp, st = self.stamper.process(x, self.prepared.get(t), pos)
         # fades are emitter-only (first 0.2 s / last 0.1 s of a session); verifiers skip them
