@@ -925,7 +925,9 @@ def _pair_replacements(edits: list[dict]) -> list[dict]:
         a = edits[i]
         b = edits[i + 1] if i + 1 < len(edits) else None
         if (b and a["kind"] in ("removed", "repeated") and b["kind"] in ("removed", "repeated")
-                and abs(a["removed_s"] + b["removed_s"]) * FS < EDIT_MIN and b["clip_t"] - a["clip_t"] <= 3.0):
+                and abs(a["removed_s"] + b["removed_s"]) * FS < EDIT_MIN
+                and 0.0 < b["clip_t"] - a["clip_t"] <= 3.0
+                and abs(a["removed_s"]) > b["clip_t"] - a["clip_t"]):
             out.append({"kind": "replaced", "clip_t": a["clip_t"], "clip_t_end": b["clip_t"],
                         "duration_s": b["clip_t"] - a["clip_t"], "source_offset_s": a["removed_s"],
                         "venue_t_from": a["venue_t_to"], "venue_t_to": a["venue_t_to"] + b["clip_t"] - a["clip_t"]})
