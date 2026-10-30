@@ -532,9 +532,12 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
     d1 = _frame_sim(G, Fw, last, last.u1 - WIN, len(G), EDGE_THETA + 0.05)
     ends[-1] = last.u1 - WIN + int(np.argmax(np.concatenate([[0.0], np.cumsum(d1 - EDGE_THETA)])))
     for p, a, b in zip(pieces, starts, ends):
-        wa, wb = (a + p.off(a)) / FPS, (b + p.off(b)) / FPS
+        ca = float(np.clip(clip_t(a), 0.0, clip_s))
+        cb = float(np.clip(clip_t(b), ca, clip_s))
+        wa = float(np.clip((a + p.off(a)) / FPS, 0.0, rec.duration))
+        wb = float(np.clip((b + p.off(b)) / FPS, wa, rec.duration))
         result["pieces"].append({
-            "clip_start_s": round(clip_t(a), 3), "clip_end_s": round(clip_t(b), 3),
+            "clip_start_s": round(ca, 3), "clip_end_s": round(cb, 3),
             "witness_start_s": round(wa, 3), "witness_end_s": round(wb, 3), "similarity": round(p.r, 3),
             "witness_text": " ".join(w.tok for w in _words_in(ww, wa, wb))})
     if starts[0] / FPS > 0.5 and _speech_frac(G, 0, starts[0]) > 0.3:
