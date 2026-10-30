@@ -22,11 +22,22 @@ def _valid_beacon(d: object, rnd: int | str) -> bool:
     r_num = d.get("round")
     if isinstance(r_num, bool) or not isinstance(r_num, int) or r_num <= 0:
         return False
-    if rnd != "latest" and r_num != int(rnd):
-        return False
+    if rnd != "latest":
+        if isinstance(rnd, bool):
+            return False
+        if isinstance(rnd, int):
+            want_rnd = rnd
+        elif isinstance(rnd, str) and rnd.isascii() and rnd.isdigit():
+            want_rnd = int(rnd)
+        else:
+            return False
+        if want_rnd <= 0 or r_num != want_rnd:
+            return False
     rand_hex = d.get("randomness")
     sig_hex = d.get("signature")
     if not isinstance(rand_hex, str) or not isinstance(sig_hex, str):
+        return False
+    if len(rand_hex) != 64 or any(c.isspace() for c in rand_hex) or any(c.isspace() for c in sig_hex):
         return False
     try:
         rand_bytes = bytes.fromhex(rand_hex)
@@ -40,6 +51,17 @@ def _valid_beacon(d: object, rnd: int | str) -> bool:
 
 def fetch_round(rnd: int | str, timeout: float = 2.0) -> dict | None:
     """`rnd` is a round number or "latest". Returns {"round", "randomness", "signature"} or None."""
+    if rnd != "latest":
+        if isinstance(rnd, bool):
+            return None
+        if isinstance(rnd, int):
+            if rnd <= 0:
+                return None
+        elif isinstance(rnd, str) and rnd.isascii() and rnd.isdigit():
+            if int(rnd) <= 0:
+                return None
+        else:
+            return None
     for base in RELAYS:
         try:
             with urllib.request.urlopen(f"{base}/public/{rnd}", timeout=timeout) as r:
@@ -56,6 +78,8 @@ class DrandCache:
     """Polls `latest` every second and keeps recent rounds by number."""
 
     def __init__(self, keep: int = 64):
+        if isinstance(keep, bool) or not isinstance(keep, int) or keep < 1:
+            raise ValueError(f"keep must be an int >= 1, got {keep!r}")
         self._rounds: dict[int, dict] = {}
         self._lock = threading.Lock()
         self._keep = keep
@@ -72,8 +96,11 @@ class DrandCache:
     def _store(self, d: dict) -> None:
         with self._lock:
             self._rounds[int(d["round"])] = d
-            for r in sorted(self._rounds)[:-self._keep]:
-                del self._rounds[r]
+            if self._keep <= 0:
+                self._rounds.clear()
+            elif len(self._rounds) > self._keep:
+                for r in sorted(self._rounds)[:-self._keep]:
+                    del self._rounds[r]
         self.last_ok = time.time()
 
     def _poll(self) -> None:
