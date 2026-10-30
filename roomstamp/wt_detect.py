@@ -1382,9 +1382,19 @@ def _restore_audio(doc: dict, sl: SessionLog | None, out_path: str | None) -> No
         return
     from . import wavio
     stem = os.path.splitext(os.path.abspath(out_path))[0]
-    for i, e in enumerate(doc["layers"]["l1"].get("edits") or []):  # fuse() copies these into the verdict
-        if e["source"] != "l1" or e["kind"] != "removed" or e.get("venue_t_from") is None or e.get("venue_t_to") is None:
-            continue
+    l1_edits = doc["layers"]["l1"].get("edits") or []
+    removed_edits = sorted(
+        (
+            e for e in l1_edits
+            if e.get("source") == "l1"
+            and e.get("kind") == "removed"
+            and e.get("venue_t_from") is not None
+            and e.get("venue_t_to") is not None
+        ),
+        key=lambda e: float(e.get("clip_t") or 0.0),
+    )
+    idx = 0
+    for e in removed_edits:  # fuse() copies these into the verdict
         a = (e["venue_t_from"] - 1.5 - sl.t_start) * FS
         b = (e["venue_t_to"] + 1.5 - sl.t_start) * FS
         try:
@@ -1392,11 +1402,12 @@ def _restore_audio(doc: dict, sl: SessionLog | None, out_path: str | None) -> No
             x = _read_feed(sl.feed_path, s0, max(0, int(b)))
             if len(x) == 0:
                 continue
-            path = f"{stem}_edit{i}.wav"
+            path = f"{stem}_edit{idx}.wav"
             pk = np.max(np.abs(x)) + 1e-9
             wavio.write(path, x * min(1.0, 0.9 / pk))
             e["restored_audio"] = os.path.relpath(path, os.path.dirname(os.path.abspath(out_path)))
             e["restored_audio_venue_t"] = [sl.t_start + s0 / FS, sl.t_start + (s0 + len(x)) / FS]
+            idx += 1
         except Exception as ex:
             doc["warnings_base"].append(f"restored_audio_failed: {ex}")
 
