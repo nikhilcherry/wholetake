@@ -88,10 +88,17 @@ class DrandCache:
         self._thread = threading.Thread(target=self._run, daemon=True, name="drand")
 
     def start(self) -> None:
+        if self._thread.is_alive():
+            return
+        self._stop.clear()
+        if self._thread.ident is not None:
+            self._thread = threading.Thread(target=self._run, daemon=True, name="drand")
         self._thread.start()   # first poll happens on the thread; start() never blocks
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 1.0) -> None:
         self._stop.set()
+        if self._thread.ident is not None and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=timeout)
 
     def _store(self, d: dict) -> None:
         with self._lock:
@@ -105,18 +112,20 @@ class DrandCache:
 
     def _poll(self) -> None:
         d = fetch_round("latest")
-        if d is None:
+        if d is None or self._stop.is_set():
             return
         self._store(d)
         # backfill the rounds before latest that round_for() asks for (lag 3 + slack)
         for r in range(int(d["round"]) - 5, int(d["round"])):
+            if self._stop.is_set():
+                return
             if self.get(r) is None:
                 dd = fetch_round(r)
                 if dd:
                     self._store(dd)
 
     def _run(self) -> None:
-        while True:
+        while not self._stop.is_set():
             try:
                 self._poll()
             except Exception:
