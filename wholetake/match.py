@@ -496,6 +496,7 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
                 continue
             gap["type"] = "insertion"
         result["gaps"].append(gap)
+    result["decisive_words_removed"] = sorted(set(result["decisive_words_removed"]))
     result["verdict"] = "spliced" if spliced else "cut" if cut else "faithful"
     return _done(result, t0)
 
