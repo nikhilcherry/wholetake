@@ -521,6 +521,8 @@ def main(argv=None) -> None:
     if t_lo is None or t_hi is None:
         span = src.log_span()
         if not span:
+            if a.log:
+                ap.error(f"session log {a.log!r} has no recorded seconds; pass --around or --from/--to")
             ap.error("give --log, --around, or --from/--to")
         t_lo, t_hi = span
         if src.header and src.header.get("key_id") not in (None, spec.key_id(key)):
