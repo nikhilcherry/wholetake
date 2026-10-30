@@ -117,12 +117,21 @@ def _sw_pieces(cw: list[asr.Word], ww: list[asr.Word]) -> list[list[tuple[int, i
 def _tempo_from_text(pieces, cw, ww) -> float | None:
     slopes = []
     for p in pieces:
-        pts = [(cw[c].start, ww[w].start) for c, w in p]
-        for a in range(len(pts)):
-            for b in range(a + 1, len(pts)):
-                dc = pts[b][0] - pts[a][0]
-                if dc >= 1.5:
-                    slopes.append((pts[b][1] - pts[a][1]) / dc)
+        runs: list[list[tuple[int, int]]] = []
+        for c, w in p:
+            if (runs and 1 <= c - runs[-1][-1][0] <= 2 and w - runs[-1][-1][1] == c - runs[-1][-1][0]
+                    and (ww[w].start - ww[runs[-1][-1][1]].end)
+                    - 1.6 * max(0.0, cw[c].start - cw[runs[-1][-1][0]].end) < 0.5):
+                runs[-1].append((c, w))
+            else:
+                runs.append([(c, w)])
+        for run in runs:
+            pts = [(cw[c].start, ww[w].start) for c, w in run]
+            for a in range(len(pts)):
+                for b in range(a + 1, len(pts)):
+                    dc = pts[b][0] - pts[a][0]
+                    if dc >= 1.5:
+                        slopes.append((pts[b][1] - pts[a][1]) / dc)
     if len(slopes) < 5:
         return None
     return float(np.clip(np.median(slopes), 0.7, 1.5))
@@ -279,8 +288,9 @@ def _tempo_refine(F, Fw, regions, alpha0: float, text_tempo: bool) -> float:
         cache[key] = val
         return val
 
-    # coarse: around the text guess, plain speed, and a uniform [0.70, 1.50] grid when text is absent
-    coarse = {round(a0 + d, 3) for a0 in {round(alpha0, 3), 1.0} for d in (-0.02, 0.0, 0.02)}
+    # coarse: around the text guess, plain speed, preset tempos, and a uniform [0.70, 1.50] grid when text is absent
+    coarse = ({round(a0 + d, 3) for a0 in {round(alpha0, 3), 1.0} for d in (-0.02, 0.0, 0.02)}
+              | {0.9, 1.1, 1.2, 1.25, 1.3, 1.4, 1.5})
     if not text_tempo:
         coarse |= {round(float(a), 3) for a in np.arange(0.70, 1.51, 0.04)} | {1.25}
     best_a, best_s = 1.0, -2.0
