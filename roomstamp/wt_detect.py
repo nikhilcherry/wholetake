@@ -789,7 +789,7 @@ def run_l2(clip: Clip, sl: SessionLog | None, key: bytes, window: tuple[int, int
     return st
 
 
-WT_KIND = {"cut": "removed", "pause_trim": "removed", "splice": "reordered", "insertion": "inserted",
+WT_KIND = {"cut": "removed", "pause_trim": "pause_trim", "splice": "reordered", "insertion": "inserted",
            "replacement": "replaced", "foreign": "foreign"}
 
 
@@ -829,7 +829,7 @@ def run_wt(clip: Clip, witness: str | None, warnings: list[str]) -> dict:
         ed = {**e, "kind": k, "wt_kind": e.get("kind"),
               "source": "wt", "precision_s": e.get("precision_s", 0.05),
               "restored_text": e.get("restored_text") or None,
-              "removed_s": e.get("removed_s") if k in ("removed", "repeated") else None}
+              "removed_s": e.get("removed_s") if k in ("removed", "repeated", "pause_trim") else None}
         if dur is not None or k in ("foreign", "replaced"):
             ed["duration_s"] = dur
         if e.get("source_offset_s") is not None or k == "replaced":
@@ -898,7 +898,7 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
                 continue
             if name in ("l1", "wt") and not st.get("content_match"):
                 continue
-            pool.extend(st["edits"])
+            pool.extend(e for e in st["edits"] if e.get("kind") != "pause_trim")
     pool.sort(key=lambda e: (rank.get(e.get("source"), 9), e.get("clip_t", 0)))
     out: list[dict] = []
     for e in pool:
@@ -935,7 +935,7 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
 
 def _edit_summary(edits: list[dict]) -> str:
     cuts = [e for e in edits if e["kind"] == "removed"]
-    other = [e for e in edits if e["kind"] != "removed"]
+    other = [e for e in edits if e["kind"] not in ("removed", "pause_trim")]
     parts = []
     if len(cuts) == 1:
         e = cuts[0]
