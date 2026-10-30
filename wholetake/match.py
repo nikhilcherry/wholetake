@@ -83,15 +83,17 @@ def _sw_pieces(cw: list[asr.Word], ww: list[asr.Word]) -> list[list[tuple[int, i
     match_w = 1.0 + np.minimum(2.0, idf / 2.0)          # "the" ~ 1.3, a content word ~ 3
     S = np.where(cid[:, None] == wid[None, :], match_w[None, :],
                  np.where(cph[:, None] == wph[None, :], SW_PHON, SW_MISMATCH))
-    idx = np.arange(N + 1)
-    pieces = []
+    pieces: list[list[tuple[int, int]]] = []
     for _ in range(SW_MAX_PIECES):
+        if len(pieces) >= SW_MAX_PIECES:
+            break
         H = np.zeros((M + 1, N + 1))
         for i in range(1, M + 1):
             e = np.zeros(N + 1)
             e[1:] = np.maximum(H[i - 1, :-1] + S[i - 1], H[i - 1, 1:] + SW_GAP_CLIP)
-            e = np.maximum(e, 0.0)
-            H[i] = np.maximum.accumulate(e - SW_GAP_WIT * idx) + SW_GAP_WIT * idx
+            if N >= 2:
+                e[2:] = np.maximum(e[2:], H[i - 1, :-2] + S[i - 1, 1:] + SW_GAP_WIT)
+            H[i] = np.maximum(e, 0.0)
         i, j = np.unravel_index(int(np.argmax(H)), H.shape)
         if H[i, j] < SW_MIN_SCORE:
             break
@@ -103,26 +105,50 @@ def _sw_pieces(cw: list[asr.Word], ww: list[asr.Word]) -> list[list[tuple[int, i
                 i, j = i - 1, j - 1
             elif abs(H[i, j] - (H[i - 1, j] + SW_GAP_CLIP)) < 1e-9:
                 i -= 1
+            elif j >= 2 and abs(H[i, j] - (H[i - 1, j - 2] + S[i - 1, j - 1] + SW_GAP_WIT)) < 1e-9:
+                if S[i - 1, j - 1] > 0:
+                    anchors.append((i - 1, j - 1))
+                i, j = i - 1, j - 2
             else:
-                j -= 1
+                break
         anchors.reverse()
-        if len(anchors) < 3:
+        runs: list[list[tuple[int, int]]] = []
+        for c, w in anchors:
+            if runs and (w <= runs[-1][-1][1] or (w - runs[-1][-1][1]) - (c - runs[-1][-1][0]) >= 2):
+                runs.append([(c, w)])
+            elif runs:
+                runs[-1].append((c, w))
+            else:
+                runs.append([(c, w)])
+        kept = [r for r in runs if len(r) >= 3]
+        if not kept:
             break
-        pieces.append(anchors)
-        for c, _ in anchors:
-            S[c] = -10.0                              # mask matched clip tokens and look again
+        for r in kept:
+            if len(pieces) < SW_MAX_PIECES:
+                pieces.append(r)
+            for c, _ in r:
+                S[c] = -10.0                          # mask matched clip tokens and look again
     return pieces
 
 
 def _tempo_from_text(pieces, cw, ww) -> float | None:
     slopes = []
     for p in pieces:
-        pts = [(cw[c].start, ww[w].start) for c, w in p]
-        for a in range(len(pts)):
-            for b in range(a + 1, len(pts)):
-                dc = pts[b][0] - pts[a][0]
-                if dc >= 1.5:
-                    slopes.append((pts[b][1] - pts[a][1]) / dc)
+        runs: list[list[tuple[int, int]]] = []
+        for c, w in p:
+            if (runs and 1 <= c - runs[-1][-1][0] <= 2 and w - runs[-1][-1][1] == c - runs[-1][-1][0]
+                    and (ww[w].start - ww[runs[-1][-1][1]].end)
+                    - 1.6 * max(0.0, cw[c].start - cw[runs[-1][-1][0]].end) < 0.5):
+                runs[-1].append((c, w))
+            else:
+                runs.append([(c, w)])
+        for run in runs:
+            pts = [(cw[c].start, ww[w].start) for c, w in run]
+            for a in range(len(pts)):
+                for b in range(a + 1, len(pts)):
+                    dc = pts[b][0] - pts[a][0]
+                    if dc >= 1.5:
+                        slopes.append((pts[b][1] - pts[a][1]) / dc)
     if len(slopes) < 5:
         return None
     return float(np.clip(np.median(slopes), 0.7, 1.5))
@@ -149,9 +175,14 @@ def warp(F: np.ndarray, alpha: float) -> np.ndarray:
 
 def _regions(pieces, cw, ww, alpha, clip_s, rec_s) -> list[tuple[int, int]]:
     spans = []
+    alphas = {float(alpha), 1.0}
     for p in pieces:
-        b = float(np.median([ww[w].start - alpha * cw[c].start for c, w in p]))
-        spans.append((b - REGION_PAD_S, b + alpha * clip_s + REGION_PAD_S))
+        if not p:
+            continue
+        pts = [ww[w].start - a * cw[c].start for a in alphas for c, w in p] + [
+            ww[w].start + a * (clip_s - cw[c].start) for a in alphas for c, w in p
+        ]
+        spans.append((min(pts) - REGION_PAD_S, max(pts) + REGION_PAD_S))
     if not spans and rec_s <= WHOLE_RECORD_MAX_S:
         spans = [(0.0, rec_s)]
     spans.sort()
@@ -161,7 +192,14 @@ def _regions(pieces, cw, ww, alpha, clip_s, rec_s) -> list[tuple[int, int]]:
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
-    return [(max(0, int(a * FPS)), min(int(rec_s * FPS), int(b * FPS))) for a, b in merged]
+    n_frames = int(rec_s * FPS)
+    out = []
+    for a, b in merged:
+        r0 = max(0, min(n_frames, int(a * FPS)))
+        r1 = max(r0, min(n_frames, int(b * FPS)))
+        if r1 > r0:
+            out.append((r0, r1))
+    return out
 
 
 def _scan(Fc: np.ndarray, Fw: np.ndarray, regions, win=WIN, hop=HOP, starts=None):
@@ -175,6 +213,8 @@ def _scan(Fc: np.ndarray, Fw: np.ndarray, regions, win=WIN, hop=HOP, starts=None
     valid_regions = [(r0, r1) for r0, r1 in regions if r1 - r0 - win + 1 > 0]
     if not valid_regions:
         return [(int(u), None, 0.0, 0.0) for u in starts]
+    w_cs = np.concatenate([[0], np.cumsum((np.abs(Fw).sum(1) > 0).astype(np.int32))])
+    w_mask = np.concatenate([w_cs[r0 + win:r1 + 1] - w_cs[r0:r1 - win + 1] for r0, r1 in valid_regions]) >= MIN_ACTIVE * win
     # Window score at witness start s = sum_k cos(clip[u+k], wit[s+k]): diagonal sums of the
     # frame-similarity matrix, evaluated in bounded batches of windows and witness sub-chunks
     # so peak memory stays well below 100 MB even on 600 s clips vs 1200 s witness records.
@@ -236,8 +276,14 @@ def _scan(Fc: np.ndarray, Fw: np.ndarray, regions, win=WIN, hop=HOP, starts=None
                     pos = r0_ + (k - off)
                     break
                 off += S.shape[1]
-            med = np.median(allc)
-            mad = 1.4826 * np.median(np.abs(allc - med)) + 1e-6
+            pool = allc[w_mask & (allc != 0)]
+            if len(pool) == 0:
+                pool = allc[allc != 0]
+            if len(pool) == 0:
+                med, mad = 0.0, 0.02
+            else:
+                med = float(np.median(pool))
+                mad = max(float(1.4826 * np.median(np.abs(pool - med))), 0.02)
             out.append((int(u), int(pos), float(allc[k]), float((allc[k] - med) / mad)))
     return out
 
@@ -259,8 +305,9 @@ def _tempo_refine(F, Fw, regions, alpha0: float, text_tempo: bool) -> float:
         cache[key] = val
         return val
 
-    # coarse: around the text guess, plain speed, and a uniform [0.70, 1.50] grid when text is absent
-    coarse = {round(a0 + d, 3) for a0 in {round(alpha0, 3), 1.0} for d in (-0.02, 0.0, 0.02)}
+    # coarse: around the text guess, plain speed, preset tempos, and a uniform [0.70, 1.50] grid when text is absent
+    coarse = ({round(a0 + d, 3) for a0 in {round(alpha0, 3), 1.0} for d in (-0.02, 0.0, 0.02)}
+              | {0.9, 1.1, 1.2, 1.25, 1.3, 1.4, 1.5})
     if not text_tempo:
         coarse |= {round(float(a), 3) for a in np.arange(0.70, 1.51, 0.04)} | {1.25}
     best_a, best_s = 1.0, -2.0
@@ -281,15 +328,62 @@ def _tempo_refine(F, Fw, regions, alpha0: float, text_tempo: bool) -> float:
     return float(best_a)
 
 
-def _group(track) -> list[Piece]:
+def _pred_off(g: list, u: float, tail: bool = True) -> float:
+    sub = g[-20:] if tail else g[:20]
+    us = np.array([w[0] for w in sub], float)
+    os_ = np.array([w[1] for w in sub], float)
+    if len(sub) >= 5 and np.ptp(us) > 0:
+        c1, c0 = np.polyfit(us, os_, 1)
+        if abs(c1) <= 0.01:
+            return float(c0 + c1 * u)
+    return float(np.median(os_))
+
+
+def _same_line(prev: list, g: list) -> bool:
+    if abs(np.median([w[1] for w in g]) - np.median([w[1] for w in prev])) <= TRACK_TOL:
+        return True
+    if abs(np.median([w[1] - _pred_off(prev, w[0], tail=True) for w in g[:5]])) <= TRACK_TOL:
+        return True
+    if abs(np.median([w[1] - _pred_off(g, w[0], tail=False) for w in prev[-5:]])) <= TRACK_TOL:
+        return True
+    us_p = np.array([w[0] for w in prev], float)
+    os_p = np.array([w[1] for w in prev], float)
+    us_g = np.array([w[0] for w in g], float)
+    os_g = np.array([w[1] for w in g], float)
+    if np.ptp(np.concatenate([us_p, us_g])) > 0:
+        c1, c0 = np.polyfit(np.concatenate([us_p, us_g]), np.concatenate([os_p, os_g]), 1)
+        if abs(c1) <= 0.01:
+            rp = np.abs(os_p - (c0 + c1 * us_p))
+            rg = np.abs(os_g - (c0 + c1 * us_g))
+            if (np.median(rp) <= TRACK_TOL and np.median(rg) <= TRACK_TOL
+                    and np.median(rp[-5:]) <= TRACK_TOL and np.median(rg[:5]) <= TRACK_TOL):
+                return True
+    return False
+
+
+def _piece_from_windows(g: list) -> Piece:
+    us = np.array([w[0] for w in g], float)
+    os_ = np.array([w[1] for w in g], float)
+    c1, c0 = (np.polyfit(us, os_, 1) if len(g) >= 5 and np.ptp(us) > 0 else (0.0, float(np.median(os_))))
+    if abs(c1) > 0.01:  # tempo residual can only be tiny after warping; else fall back to flat
+        c1, c0 = 0.0, float(np.median(os_))
+    return Piece(int(us[0]), int(us[-1]) + WIN, float(c0), float(c1), g, float(np.median([w[2] for w in g])))
+
+
+def _merge_pieces(A: Piece, B: Piece) -> Piece:
+    return _piece_from_windows(A.windows + B.windows)
+
+
+def _group(track, F: np.ndarray | None = None) -> list[Piece]:
+    def _active_gap(a: int, b: int) -> bool:
+        return b - a >= FOREIGN_MIN_S * FPS and (F is None or _speech_frac(F, a, b) > 0.5)
+
     good = [(u, s - u, r) for u, s, r, z in track if s is not None and r >= R_MIN and z >= Z_MIN]
     groups: list[list] = []
     for u, off, r in good:
         g = groups[-1] if groups else None
-        if g is not None:
-            us = np.array([w[0] for w in g[-20:]])
-            os_ = np.array([w[1] for w in g[-20:]])
-            pred = (np.polyval(np.polyfit(us, os_, 1), u) if len(g) >= 5 and np.ptp(us) > 0 else np.median(os_))
+        if g is not None and not _active_gap(g[-1][0] + WIN, u):
+            pred = _pred_off(g, u, tail=True)
             if abs(off - pred) <= TRACK_TOL:
                 g.append((u, off, r))
                 continue
@@ -297,19 +391,11 @@ def _group(track) -> list[Piece]:
     groups = [g for g in groups if len(g) >= MIN_PIECE_WINDOWS]
     merged: list[list] = []
     for g in groups:  # same line after an interruption (noise burst, applause) = still continuous
-        if merged and abs(np.median([w[1] for w in g]) - np.median([w[1] for w in merged[-1]])) <= TRACK_TOL:
+        if merged and _same_line(merged[-1], g) and not _active_gap(merged[-1][-1][0] + WIN, g[0][0]):
             merged[-1] += g
         else:
             merged.append(g)
-    pieces = []
-    for g in merged:
-        us = np.array([w[0] for w in g], float)
-        os_ = np.array([w[1] for w in g], float)
-        c1, c0 = (np.polyfit(us, os_, 1) if len(g) >= 5 and np.ptp(us) > 0 else (0.0, float(np.median(os_))))
-        if abs(c1) > 0.01:  # tempo residual can only be tiny after warping; else fall back to flat
-            c1, c0 = 0.0, float(np.median(os_))
-        pieces.append(Piece(int(us[0]), int(us[-1]) + WIN, float(c0), float(c1), g, float(np.median([w[2] for w in g]))))
-    return pieces
+    return [_piece_from_windows(g) for g in merged]
 
 
 def _frame_sim(Fc, Fw, piece: Piece, lo: int, hi: int, pause: float | None = None) -> np.ndarray:
@@ -363,9 +449,11 @@ def _boundary(Fc, Fw, A: Piece, B: Piece):
     cA = np.concatenate([[0.0], np.cumsum(dA)])
     cB = np.concatenate([[0.0], np.cumsum(dB)])
     u_cut = lo + int(np.argmax(cA + (cB[-1] - cB)))
-    a_end = lo + int(np.argmax(np.concatenate([[0.0], np.cumsum(dA - EDGE_THETA)])))
-    tail = np.concatenate([np.cumsum((dB - EDGE_THETA)[::-1])[::-1], [0.0]])
-    b_start = lo + int(np.argmax(tail))
+    a_hi = B.u0 if A.u1 <= B.u0 else hi
+    b_lo = A.u1 if A.u1 <= B.u0 else lo
+    a_end = lo + int(np.argmax(np.concatenate([[0.0], np.cumsum(dA[:max(0, a_hi - lo)] - EDGE_THETA)])))
+    tail = np.concatenate([np.cumsum((dB[max(0, b_lo - lo):] - EDGE_THETA)[::-1])[::-1], [0.0]])
+    b_start = max(lo, b_lo) + int(np.argmax(tail))
     R = int(REFINE_S * FPS)
     offA = _subframe_off(Fc, Fw, A, max(A.u0, u_cut - R), u_cut)
     offB = _subframe_off(Fc, Fw, B, u_cut, min(B.u1, u_cut + R))
@@ -428,7 +516,7 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
         return _done(result, t0)
     alpha = _tempo_refine(Fc, Fw, regions, alpha0, alpha_t is not None)
     G = warp(Fc, alpha)
-    pieces = _group(_scan(G, Fw, regions))
+    pieces = _group(_scan(G, Fw, regions), G)
     tm["acoustic_ms"] = (time.time() - t3) * 1e3
     result["tempo"] = round(alpha, 3)
     covered = sum(p.u1 - p.u0 for p in pieces) / FPS
@@ -437,6 +525,16 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
 
     def clip_t(u):  # warped frame -> clip seconds
         return float(u) / FPS / alpha
+
+    while len(pieces) > 1:
+        for i in range(len(pieces) - 1):
+            a_end, b_start, u_cut, offA, offB = _boundary(G, Fw, pieces[i], pieces[i + 1])
+            is_foreign = (b_start - a_end) / FPS >= FOREIGN_MIN_S and _speech_frac(G, a_end, b_start) > 0.5
+            if not is_foreign and abs((u_cut + offB) / FPS - (u_cut + offA) / FPS) <= JUMP_MIN:
+                pieces[i:i + 2] = [_merge_pieces(pieces[i], pieces[i + 1])]
+                break
+        else:
+            break
 
     bounds = [_boundary(G, Fw, A, B) for A, B in zip(pieces, pieces[1:])]
     foreign = [(b_start - a_end) / FPS >= FOREIGN_MIN_S and _speech_frac(G, a_end, b_start) > 0.5
@@ -451,9 +549,12 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
     d1 = _frame_sim(G, Fw, last, last.u1 - WIN, len(G), EDGE_THETA + 0.05)
     ends[-1] = last.u1 - WIN + int(np.argmax(np.concatenate([[0.0], np.cumsum(d1 - EDGE_THETA)])))
     for p, a, b in zip(pieces, starts, ends):
-        wa, wb = (a + p.off(a)) / FPS, (b + p.off(b)) / FPS
+        ca = float(np.clip(clip_t(a), 0.0, clip_s))
+        cb = float(np.clip(clip_t(b), ca, clip_s))
+        wa = float(np.clip((a + p.off(a)) / FPS, 0.0, rec.duration))
+        wb = float(np.clip((b + p.off(b)) / FPS, wa, rec.duration))
         result["pieces"].append({
-            "clip_start_s": round(clip_t(a), 3), "clip_end_s": round(clip_t(b), 3),
+            "clip_start_s": round(ca, 3), "clip_end_s": round(cb, 3),
             "witness_start_s": round(wa, 3), "witness_end_s": round(wb, 3), "similarity": round(p.r, 3),
             "witness_text": " ".join(w.tok for w in _words_in(ww, wa, wb))})
     if starts[0] / FPS > 0.5 and _speech_frac(G, 0, starts[0]) > 0.3:
@@ -496,6 +597,7 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
                 continue
             gap["type"] = "insertion"
         result["gaps"].append(gap)
+    result["decisive_words_removed"] = sorted(set(result["decisive_words_removed"]))
     result["verdict"] = "spliced" if spliced else "cut" if cut else "faithful"
     return _done(result, t0)
 

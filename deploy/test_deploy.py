@@ -524,7 +524,7 @@ def _resolve_module_exists(mod_name: str) -> bool:
     return (pkg_dir.is_dir() and (pkg_dir / "__main__.py").is_file()) or py_file.is_file()
 
 
-class TestDockerComposeStack(unittest.TestCase):
+class TestDockerComposeStatic(unittest.TestCase):
     def test_docker_compose_core_and_optional_services(self) -> None:
         compose_path = REPO_ROOT / "docker-compose.yml"
         self.assertTrue(compose_path.is_file(), "docker-compose.yml must exist at repo root")
@@ -532,7 +532,16 @@ class TestDockerComposeStack(unittest.TestCase):
         parsed = _parse_docker_compose(raw_text)
         services = parsed.get("services", {})
 
-        expected_services = {"simx", "verdict", "bot", "chain", "anchor", "wt-cli"}
+        expected_services = {
+            "simx",
+            "verdict",
+            "bot",
+            "chain",
+            "transcribe",
+            "anchor",
+            "wt-detect",
+            "roomstamp",
+        }
         self.assertTrue(
             expected_services.issubset(set(services.keys())),
             f"Missing services in docker-compose.yml: {expected_services - set(services.keys())}",
@@ -554,7 +563,7 @@ class TestDockerComposeStack(unittest.TestCase):
         simx = services["simx"]
         simx_cmd = " ".join(simx["command"]) if isinstance(simx.get("command"), list) else str(simx.get("command"))
         self.assertIn("python -m simx serve --host 0.0.0.0 --port 8791 --data /app/data/simx", simx_cmd)
-        self.assertIn("8791:8791", simx.get("ports", []))
+        self.assertIn("${SIMX_PORT:-8791}:8791", simx.get("ports", []))
         self.assertIn("./data:/app/data", simx.get("volumes", []))
         simx_hc = " ".join(simx["healthcheck"]["test"])
         self.assertIn("http://127.0.0.1:8791/2/tweets/search/recent?query=wholetake", simx_hc)
@@ -563,32 +572,62 @@ class TestDockerComposeStack(unittest.TestCase):
         verdict = services["verdict"]
         verdict_cmd = " ".join(verdict["command"]) if isinstance(verdict.get("command"), list) else str(verdict.get("command"))
         self.assertIn("python -m verdict serve --host 0.0.0.0 --port 8790", verdict_cmd)
-        self.assertIn("8790:8790", verdict.get("ports", []))
+        self.assertIn("${WT_VERDICT_PORT:-8790}:8790", verdict.get("ports", []))
         self.assertIn("simx", verdict.get("depends_on", []))
-        for v_mount in ("./data:/app/data", "./logs:/app/logs:ro", "./keys:/app/keys:ro"):
+        for v_mount in ("./data:/app/data", "./logs:/app/logs", "./keys:/app/keys:ro"):
             self.assertIn(v_mount, verdict.get("volumes", []), f"verdict missing volume {v_mount}")
 
         verdict_env = verdict.get("environment", [])
         env_map = dict(item.split("=", 1) for item in verdict_env if "=" in item)
-        self.assertEqual(env_map.get("WT_FETCH_ALLOW_HOSTS"), "simx:8791,127.0.0.1:8791")
+        expected_verdict_env = {
+            "WT_VERDICT_PORT": "8790",
+            "WT_FETCH_ALLOW_HOSTS": "${WT_FETCH_ALLOW_HOSTS:-127.0.0.1:8791,simx:8791}",
+            "WT_DETECT": "${WT_DETECT:-python -m verdict.wt_adapter}",
+            "WT_WITNESS_ROOT": "/app/data/witness",
+            "WT_VERDICTS_DIR": "/app/data/verdicts",
+            "ROOMSTAMP_LOG_DIR": "/app/logs",
+            "ROOMSTAMP_KEY_FILE": "/app/keys/venue.key",
+            "WHOLETAKE_ASR": "${WHOLETAKE_ASR:-none}",
+        }
+        for ek, ev in expected_verdict_env.items():
+            self.assertEqual(env_map.get(ek), ev, f"verdict environment mismatch for {ek}")
+
         verdict_hc = " ".join(verdict["healthcheck"]["test"])
-        self.assertIn("http://127.0.0.1:8790/api/verdicts?limit=1", verdict_hc)
+        self.assertIn("http://127.0.0.1:8790/api/status", verdict_hc)
 
         # Optional daemons profile
-        for daemon_name in ("bot", "chain", "anchor"):
+        expected_daemon_cmds = {
+            "bot": "python -m bot run",
+            "chain": "python -m ingest.chain /app/data/witness",
+            "transcribe": "python -m ingest.transcribe /app/data/witness",
+            "anchor": "python -m anchor run /app/data/witness",
+        }
+        for daemon_name, expected_cmd in expected_daemon_cmds.items():
             d_svc = services[daemon_name]
             self.assertIn("daemons", d_svc.get("profiles", []), f"{daemon_name} must use profile 'daemons'")
+            d_cmd = " ".join(d_svc["command"]) if isinstance(d_svc.get("command"), list) else str(d_svc.get("command"))
+            self.assertEqual(d_cmd, expected_cmd, f"Unexpected command for daemon {daemon_name}")
             self.assertIn("./data:/app/data", d_svc.get("volumes", []))
+            self.assertIn("./logs:/app/logs", d_svc.get("volumes", []))
 
         self.assertIn("verdict", services["bot"].get("depends_on", []))
         self.assertIn("simx", services["bot"].get("depends_on", []))
         self.assertIn("./keys:/app/keys:ro", services["anchor"].get("volumes", []))
 
-        # Optional cli profile
-        wt_cli = services["wt-cli"]
-        self.assertIn("cli", wt_cli.get("profiles", []))
-        for cli_mount in ("./data:/app/data", "./logs:/app/logs:ro", "./keys:/app/keys:ro", "./testdata:/app/testdata:ro"):
-            self.assertIn(cli_mount, wt_cli.get("volumes", []))
+        # Optional cli profile: wt-detect & roomstamp
+        wt_detect = services["wt-detect"]
+        self.assertIn("cli", wt_detect.get("profiles", []))
+        wt_detect_ep = " ".join(wt_detect.get("entrypoint") or wt_detect.get("command") or [])
+        self.assertIn("python -m verdict.wt_adapter", wt_detect_ep)
+        for mnt in ("./data:/app/data", "./logs:/app/logs", "./keys:/app/keys:ro"):
+            self.assertIn(mnt, wt_detect.get("volumes", []), f"wt-detect missing volume {mnt}")
+
+        roomstamp_svc = services["roomstamp"]
+        self.assertIn("cli", roomstamp_svc.get("profiles", []))
+        roomstamp_ep = " ".join(roomstamp_svc.get("entrypoint") or roomstamp_svc.get("command") or [])
+        self.assertIn("python -m roomstamp", roomstamp_ep)
+        for mnt in ("./data:/app/data", "./logs:/app/logs", "./keys:/app/keys"):
+            self.assertIn(mnt, roomstamp_svc.get("volumes", []), f"roomstamp missing volume {mnt}")
 
         # Ensure no hardcoded 64-hex secrets or private API tokens in docker-compose.yml
         hex64_re = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])")
@@ -615,7 +654,20 @@ class TestDockerComposeStack(unittest.TestCase):
                 for m in re.findall(r"(?:python3?|\./py)\s+-m\s+([a-zA-Z0-9_.]+)", str(env_item)):
                     compose_modules.add(m)
 
-        self.assertGreaterEqual(len(compose_modules), 5, "Expected >=5 python -m entrypoints in docker-compose.yml")
+        required_compose_modules = {
+            "verdict",
+            "simx",
+            "verdict.wt_adapter",
+            "roomstamp",
+            "bot",
+            "ingest.chain",
+            "ingest.transcribe",
+            "anchor",
+        }
+        self.assertTrue(
+            required_compose_modules.issubset(compose_modules),
+            f"Missing module entrypoints in docker-compose.yml: {required_compose_modules - compose_modules}",
+        )
         for mod in compose_modules:
             self.assertTrue(
                 _resolve_module_exists(mod),
@@ -636,6 +688,9 @@ class TestDockerComposeStack(unittest.TestCase):
                 _resolve_module_exists(mod),
                 f"systemd unit module 'python -m {mod}' does not resolve in repository",
             )
+
+
+TestDockerComposeStack = TestDockerComposeStatic
 
 
 if __name__ == "__main__":

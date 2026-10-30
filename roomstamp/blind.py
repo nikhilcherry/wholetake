@@ -25,6 +25,7 @@ import concurrent.futures as cf
 import hashlib
 import hmac
 import json
+import math
 import os
 import struct
 import sys
@@ -78,13 +79,18 @@ class RandomnessSource:
             self.header, secs = read_log(log)
             lookup = log_randomness(secs)
             self.by_sec = {int(t): lookup(int(t)) for t in secs}
-        if cache_path and os.path.exists(cache_path):
+        if not unanchored and cache_path and os.path.exists(cache_path):
             with open(cache_path, encoding="utf-8") as f:
-                for k, v in json.load(f).items():
-                    b = bytes.fromhex(v) if v is not None else None
-                    if b is not None and len(b) != 32:
-                        raise ValueError("randomness must be 32 bytes")
-                    self.by_round.setdefault(int(k), b)
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("drand cache must be a JSON object")
+            for k, v in data.items():
+                if v is not None and not isinstance(v, str):
+                    raise ValueError("randomness must be a 32-byte hex string")
+                b = bytes.fromhex(v) if v is not None else None
+                if b is not None and len(b) != 32:
+                    raise ValueError("randomness must be 32 bytes")
+                self.by_round.setdefault(int(k), b)
 
     def log_span(self) -> tuple[int, int] | None:
         return (min(self.by_sec), max(self.by_sec) + 1) if self.by_sec else None
@@ -159,8 +165,21 @@ def clip_band_power(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     each frame's centre in clip samples. Not the spec's IIR filters: those overlap so much that
     neighbouring bands (opposite signs) cancel, and measuring with them loses ~1/3 of z."""
     hop = HOP // 2
+    x = np.asarray(x, dtype=np.float64)
+    if x.ndim not in (1, 2) or (x.ndim == 2 and x.shape[1] == 0):
+        raise ValueError(f"clip must be a 1D mono or non-empty 2D multi-channel array, got shape {x.shape}")
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    if x.ndim == 2:
+        if x.size > 0:
+            peak0 = float(np.max(np.abs(x)))
+            if peak0 > 1.0:
+                x = x / peak0
+        x = x.mean(axis=-1)
     if len(x) < STFT_WIN:
         return np.zeros((0, L2_NBANDS)), np.zeros(0)
+    peak = float(np.max(np.abs(x)))
+    if peak > 1.0:
+        x = x / peak
     f, _, X = stft(x, FS, window="hann", nperseg=STFT_WIN, noverlap=STFT_WIN - hop, boundary=None, padded=False)
     P = np.abs(X) ** 2
     P = np.stack([P[(f >= L2_EDGES[b]) & (f < L2_EDGES[b + 1])].sum(axis=0) for b in range(L2_NBANDS)], axis=1)
@@ -180,6 +199,11 @@ def band_power(cbp: tuple[np.ndarray, np.ndarray], n_samples: int, tempo: float 
 
 def features(P: np.ndarray) -> np.ndarray:
     """Band power rows -> weighted, normalised features (same rows)."""
+    P = np.nan_to_num(np.asarray(P, dtype=np.float64), nan=0.0, posinf=np.finfo(np.float64).max / (L2_NBANDS * 2), neginf=0.0)
+    if len(P) == 0:
+        return np.zeros((0, L2_NBANDS))
+    if P.size > 0 and P.max() > 1e100:
+        P = P / P.max()
     P = np.maximum(P, P.max() * 1e-9 + 1e-20)
     E = 10.0 * np.log10(P)
 
@@ -204,7 +228,7 @@ def features(P: np.ndarray) -> np.ndarray:
 def reverb_variant(F: np.ndarray, tau: float) -> np.ndarray:
     """G[t] = sum_k h[k] F[t+k], h[k] = exp(-k/tau): correlating G with T equals correlating F
     with T smeared causally by the room's energy decay."""
-    if tau <= 0:
+    if tau <= 0 or len(F) == 0:
         return F
     k = np.arange(int(6 * tau) + 1)
     h = np.exp(-k / tau)
@@ -240,6 +264,8 @@ class Searcher:
     the same search, so the null absorbs the extra look-elsewhere."""
 
     def __init__(self, variants: list[Variant], n_blocks: int, pair: bool = True):
+        if not variants or any(len(v.F) < 2 for v in variants):
+            raise ValueError("variants must be non-empty and each variant must have at least 2 rows")
         self.variants = variants
         self.N = n_blocks
         self.pair = pair
@@ -272,8 +298,14 @@ class Searcher:
 
 
 def gumbel_p(x: float, null: np.ndarray) -> float:
-    mu, sd = float(np.mean(null)), float(np.std(null, ddof=1)) + 1e-12
-    beta = sd * np.sqrt(6.0) / np.pi
+    null = np.asarray(null, dtype=np.float64)
+    if null.size == 0:
+        return 1.0
+    raw_sd = float(np.std(null, ddof=1)) if null.size > 1 else 0.0
+    if not np.isfinite(raw_sd) or raw_sd < 1e-9:
+        return 1.0 if float(x) <= float(np.max(null)) else 0.0
+    mu = float(np.mean(null))
+    beta = raw_sd * np.sqrt(6.0) / np.pi
     loc = mu - 0.5772156649 * beta
     return float(-np.expm1(-np.exp(-(x - loc) / beta)))
 
@@ -342,15 +374,32 @@ def locate(scan: dict, F: np.ndarray, T: np.ndarray) -> dict:
 def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi: int, n_null: int = 200,
            tempos=TEMPOS, taus=TAUS, seed: int | None = None, pair: bool = True) -> dict:
     t0 = time.time()
-    clip = np.nan_to_num(np.asarray(clip, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
-    if clip.ndim > 1:
+    clip = np.asarray(clip, dtype=np.float64)
+    if clip.ndim not in (1, 2) or (clip.ndim == 2 and clip.shape[1] == 0):
+        raise ValueError(f"clip must be a 1D mono or non-empty 2D multi-channel array, got shape {clip.shape}")
+    clip = np.nan_to_num(clip, nan=0.0, posinf=0.0, neginf=0.0)
+    if clip.size > 0:
+        peak = float(np.max(np.abs(clip)))
+        if peak > 1.0:
+            clip = clip / peak
+    if clip.ndim == 2:
         clip = clip.mean(axis=-1)
     n_null = max(2, int(n_null))
     t_lo, t_hi = int(t_lo), int(t_hi)
+    tempos = tuple(float(x) for x in tempos)
+    taus = tuple(float(x) for x in taus)
+    if not tempos or any(not math.isfinite(tp) or tp <= 0.0 for tp in tempos):
+        raise ValueError("tempos must be non-empty with all tempo > 0")
+    if not taus or any(not math.isfinite(tau) or tau < 0.0 for tau in taus):
+        raise ValueError("taus must be non-empty with all tau >= 0")
     dur = len(clip) / FS
+    if any(int(max(len(clip), int(MIN_CLIP_S * FS)) * tp // HOP) < 2 for tp in tempos):
+        raise ValueError("each tempo must produce at least 2 feature rows")
     if dur < MIN_CLIP_S:
-        return {"verdict": "too short", "present": False, "clip_s": round(dur, 1),
+        return {"verdict": "too short", "present": False, "clip_s": math.floor(dur * 10) / 10,
                 "note": f"blind envelope check needs >= {MIN_CLIP_S:.0f} s (>= 20 s for a confident verdict)"}
+    if any(int(len(clip) * tp // HOP) < 2 for tp in tempos):
+        raise ValueError("each tempo must produce at least 2 feature rows")
     if t_lo > t_hi:
         t_lo, t_hi = t_hi, t_lo
     need = int(np.ceil(dur * max(tempos) + MIN_PAD_S))
@@ -393,8 +442,8 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
         "recording_start_unix": round(start, 3),
         "recording_start_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(s_cs)))
         + f".{int(round((s_cs % 1) * 100)):02d}Z",
-        "venue_span_s": round(len(v.F) / HPS, 1), "clip_s": round(dur, 1), "tempo": v.tempo,
-        "reverb_tau_ms": v.tau * 10, "z": round(r["score"], 2), "sigma_over_null": round(float(sigma), 2),
+        "venue_span_s": round(len(v.F) / HPS, 1), "clip_s": round(dur, 1), "tempo": float(v.tempo),
+        "reverb_tau_ms": float(v.tau * 10), "z": round(r["score"], 2), "sigma_over_null": round(float(sigma), 2),
         "beats": f"{beats}/{len(null)}", "p_value": float(f"{p:.2g}"),
         "null_mean_max": [round(float(null.mean()), 2), round(float(null.max()), 2)],
         "stage": stage, "window": [t_lo, t_hi], "key_id": spec.key_id(key),
@@ -423,7 +472,6 @@ def summary(r: dict) -> str:
 # ---------------------------------------------------------------- CLI
 
 def _parse_time(s: str) -> int:
-    import math
     import re
     s = s.strip()
     if "_" not in s:
@@ -458,24 +506,38 @@ def main(argv=None) -> None:
     ap.add_argument("--drand-cache", default=os.path.join("logs", "drand_cache.json"))
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
+    if not (math.isfinite(a.span) and a.span >= 0):
+        ap.error("--span must be a finite non-negative number")
+    if (a.t_from is not None) != (a.t_to is not None):
+        ap.error("--from and --to must be given together")
+    t_lo = t_hi = None
+    if a.around is not None:
+        try:
+            c = _parse_time(a.around)
+            t_lo, t_hi = int(c - a.span / 2), int(c + a.span / 2)
+        except (ValueError, OverflowError) as e:
+            ap.error(f"invalid --around/--span: {e}")
+    elif a.t_from is not None and a.t_to is not None:
+        try:
+            t_lo, t_hi = _parse_time(a.t_from), _parse_time(a.t_to)
+        except (ValueError, OverflowError) as e:
+            ap.error(f"invalid --from/--to: {e}")
+    elif not a.log:
+        ap.error("give --log, --around, or --from/--to")
 
     from .cli import load_key
     key = load_key(a.key_file)
     src = RandomnessSource(a.log, a.unanchored, a.drand_cache)
-    if bool(a.t_from) != bool(a.t_to):
-        ap.error("--from and --to must be given together")
-    if a.around:
-        c = _parse_time(a.around)
-        t_lo, t_hi = int(c - a.span / 2), int(c + a.span / 2)
-    elif a.t_from and a.t_to:
-        t_lo, t_hi = _parse_time(a.t_from), _parse_time(a.t_to)
-    elif src.log_span():
-        t_lo, t_hi = src.log_span()
+    if t_lo is None or t_hi is None:
+        span = src.log_span()
+        if not span:
+            if a.log:
+                ap.error(f"session log {a.log!r} has no recorded seconds; pass --around or --from/--to")
+            ap.error("give --log, --around, or --from/--to")
+        t_lo, t_hi = span
         if src.header and src.header.get("key_id") not in (None, spec.key_id(key)):
             print(f"note: key_id {spec.key_id(key)} != session key_id {src.header['key_id']} (expect 'absent')",
                   file=sys.stderr)
-    else:
-        ap.error("give --log, --around, or --from/--to")
     if t_lo > t_hi:
         t_lo, t_hi = t_hi, t_lo
     if t_hi - t_lo > 3600:

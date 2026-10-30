@@ -49,7 +49,7 @@ SOLID_FRAC = 0.3          # an offset change (jump / acquire) needs this much of
                           # blocks: a pause onset holds a few ms of speech filter tail that clears the window
                           # RMS bar and correlates peakily anywhere (F125: PSR 15-19 false jumps)
 EDIT_MIN = int(0.004 * FS) # offset jumps smaller than 4 ms are not reported as edits
-MAX_DRIFT = 300e-6
+MAX_DRIFT = 2500e-6
 GAP_UNMATCHED = int(2.5 * FS)  # longer unmatched gaps between pieces = foreign audio
 
 # --- stamp scoring (48 kHz) ---
@@ -66,7 +66,7 @@ MATCH_PSR_ALONE = 15.0
 # a short piece between two same-offset pieces is a repeated phrase (merged) if the neighbours'
 # alignment cancels its speech within BLIP_DB of its own alignment
 BLIP_MAX_WIN, BLIP_MAX_S, BLIP_DB = 3, 2.0, 3.0
-MIN_PIECE_S = 0.15         # pieces squeezed shorter than this by neighbouring cuts are dropped
+MIN_PIECE_S = 0.25         # pieces squeezed shorter than this by neighbouring cuts are dropped
 WRONG_MARGIN = 2.5         # present also needs clip_z >= best wrong-key clip_z + this
 N_WRONG = 3
 WARMUP_S = 10
@@ -77,9 +77,17 @@ _DITHER_0 = sosfilt(SOS_L1, _DITHER)
 _DITHER_SS = sosfilt(SOS_L1, np.tile(_DITHER, 3))[2 * FS:]
 
 
+def _sanitize(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    if not np.isfinite(x).all():
+        x = np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
+    return x
+
+
 def _band(x: np.ndarray) -> np.ndarray:
     # digital silence drives IIR state into denormals (40x slower); a fixed tiny dither avoids it,
     # and subtracting the precomputed dither response keeps silent spans from correlating
+    x = _sanitize(x)
     n = len(x)
     d = np.resize(_DITHER, n)
     y = sosfilt(SOS_L1, x + d)
@@ -275,18 +283,32 @@ def group_pieces(wins: list[Win]) -> list[list[Win]]:
 
 def _fine_lag(y: np.ndarray, x: np.ndarray, c: int, f_guess: float, n: int = FS, span: int = 48) -> tuple[float, float]:
     """Sub-sample feed position of clip window [c, c+n) near f_guess (48 kHz, band-limited)."""
-    f0 = int(round(f_guess)) - span
-    if c < 0 or c + n > len(y) or f0 < 0 or f0 + n + 2 * span > len(x):
+    fg = int(round(f_guess))
+    f0 = fg - span
+    if c < 0:
         return np.nan, 0.0
-    seg = y[c:c + n] * np.hanning(n)
-    ref = x[f0:f0 + n + 2 * span]
-    nfft = 1 << (len(ref) + n).bit_length()
+    if c + n <= len(y) and f0 >= 0 and f0 + n + 2 * span <= len(x):
+        n_eff = n
+        n_lags = 2 * span + 1
+    else:
+        f0 = max(0, f0)
+        n_eff = min(n, len(y) - c, len(x) - max(f0, fg) - span)
+        if n_eff < min(n, FS // 2):
+            n_eff = min(n, len(y) - c, len(x) - max(f0, fg))
+        if n_eff < max(64, min(n, FS // 2)):
+            return np.nan, 0.0
+        n_lags = min(fg + span, len(x) - n_eff) - f0 + 1
+        if n_lags <= 0:
+            return np.nan, 0.0
+    seg = y[c:c + n_eff] * np.hanning(n_eff)
+    ref = x[f0:f0 + n_eff + n_lags - 1]
+    nfft = 1 << (len(ref) + n_eff).bit_length()
     X = sfft.rfft(ref, nfft) * sfft.rfft(seg, nfft).conj()
     f = np.fft.rfftfreq(nfft, 1 / FS)
     band = (f >= 300) & (f <= 3400)
     mag = np.abs(X)
     X = np.where(band, X / np.maximum(mag, 0.05 * np.median(mag[band]) + 1e-30), 0.0)
-    cc = sfft.irfft(X, nfft)[:2 * span + 1]
+    cc = sfft.irfft(X, nfft)[:n_lags]
     k = int(np.argmax(np.abs(cc)))
     if cc[k] < 0:
         cc = -cc
@@ -305,18 +327,26 @@ def fit_piece(g: list[Win], yb: np.ndarray, xb: np.ndarray) -> Piece:
     if len(c) == 0:
         c, fine = np.array([g[0].c8 * DEC], float), np.array([g[0].f8 * DEC], float)
     b = 0.0
-    if len(c) >= 4 and c[-1] - c[0] >= 4 * FS:
+    if len(c) >= 4 and c[-1] - c[0] >= 2 * FS:
+        long_span = (c[-1] - c[0]) >= 4 * FS
+        mad = np.inf
         for _ in range(3):  # least squares with outlier rejection
             A = np.vstack([np.ones_like(c), c]).T
             coef, *_ = np.linalg.lstsq(A, fine, rcond=None)
             r = fine - A @ coef
-            keep = np.abs(r) <= max(3.0, 3 * 1.4826 * np.median(np.abs(r)))
-            if keep.all():
+            mad = 1.4826 * float(np.median(np.abs(r)))
+            keep = np.abs(r) <= max(3.0, 3 * mad)
+            if keep.all() or keep.sum() < 4:
                 break
             c, fine = c[keep], fine[keep]
         b = float(coef[1] - 1.0)
-        if abs(b) > MAX_DRIFT:
-            b = 0.0
+        if long_span:
+            max_b = MAX_DRIFT if mad <= 10.0 else 300e-6
+            if abs(b) > max_b:
+                b = 0.0
+        else:
+            if not (300e-6 < abs(b) <= MAX_DRIFT and mad <= 2.0):
+                b = 0.0
     a = float(np.median(fine - (1.0 + b) * c))
     p = Piece(c0=int(g[0].c8 * DEC), c1=min(int(g[-1].c8 * DEC + FS), len(yb)), a=a, b=b, n_win=len(g),
               psr=float(np.median([w.psr for w in g])))
@@ -372,6 +402,7 @@ def l1_carrier(key: bytes, t0: int, n: int, lookup) -> np.ndarray:
 
 def _voice(x: np.ndarray, key: bytes, t0: int, p: engine.StampParams, lookup, gv: np.ndarray) -> np.ndarray:
     """Vectorised equivalent of the engine's voice path (layer-2 wobble is linear in x)."""
+    x = _sanitize(x)
     if len(x) == 0:
         return np.zeros(0, dtype=np.float64)
     if p.mode == "table":
@@ -390,6 +421,7 @@ def _voice(x: np.ndarray, key: bytes, t0: int, p: engine.StampParams, lookup, gv
 def render_span(feed: np.ndarray, sess: Session, key: bytes, f_lo: float, f_hi: float) -> Render:
     # with the emitter's logged level/gain state the render starts (almost) where it's needed;
     # without it, 10 s of warm-up let the level tracker converge (scale error < 1%)
+    feed = _sanitize(feed)
     max_sec = max(0, (len(feed) - 1) // FS)
     first = min(max_sec, max(0, int(np.floor(f_lo / FS)) - 1))
     ref_rms, gain = sess.state_at(sess.t_start + first)
@@ -817,8 +849,8 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     if spec.key_id(key) != sess.key_id:
         log(f"[s2] note: key id {spec.key_id(key)} != session key id {sess.key_id}")
     mode = sess.params.mode
-    clip = np.asarray(clip, dtype=np.float64)
-    feed = np.asarray(feed, dtype=np.float64)
+    clip = _sanitize(clip)
+    feed = _sanitize(feed)
     if clip.ndim != 1 or feed.ndim != 1:
         raise ValueError("clip and feed must be 1D arrays")
     if len(clip) < FS // 4 or len(feed) < FS // 4:
@@ -869,8 +901,11 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     out_pieces = []
     for p in pieces:
         n = p.c1 - p.c0
-        if n < FS // 4:
-            p.stamp = {"windows": 0, "clip_z": 0.0, "frac_z5": 0.0, "median_z": 0.0, "status": "too short"}
+        if n < max(FS // 4, int(MIN_PIECE_S * FS)):
+            ch = Channel(clip[p.c0:p.c1], warp([rend.voice], p.f(np.arange(p.c0, p.c1)) - rend.base)[0]) if n > 0 else None
+            p.stamp = {"windows": 0, "clip_z": 0.0, "frac_z5": 0.0, "median_z": 0.0, "stamp_lag_ms": 0.0,
+                       "wrong_key_max_z": 0.0, "wrong_key_frac_z5": 0.0,
+                       "speech_removed_db": ch.removed_db if ch is not None else 0.0, "status": "too short"}
             continue
         # voice, stamp and the wrong-key stamps over the piece +- 1 s, warped in one pass
         ce = np.arange(p.c0 - FS, p.c1 + FS)
@@ -913,7 +948,7 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     scored = [s for s in statuses if s and s != "too short"]
     if scored and all(s == "present" for s in scored):
         stamp = "present"
-    elif "present" in scored or "inconclusive" in scored:
+    elif not scored or "present" in scored or "inconclusive" in scored:
         stamp = "inconclusive"
     else:
         stamp = "absent"
@@ -933,7 +968,9 @@ def _pair_replacements(edits: list[dict]) -> list[dict]:
         a = edits[i]
         b = edits[i + 1] if i + 1 < len(edits) else None
         if (b and a["kind"] in ("removed", "repeated") and b["kind"] in ("removed", "repeated")
-                and abs(a["removed_s"] + b["removed_s"]) * FS < EDIT_MIN and b["clip_t"] - a["clip_t"] <= 3.0):
+                and abs(a["removed_s"] + b["removed_s"]) * FS < EDIT_MIN
+                and 0.0 < b["clip_t"] - a["clip_t"] <= 3.0
+                and abs(a["removed_s"]) > b["clip_t"] - a["clip_t"]):
             out.append({"kind": "replaced", "clip_t": a["clip_t"], "clip_t_end": b["clip_t"],
                         "duration_s": b["clip_t"] - a["clip_t"], "source_offset_s": a["removed_s"],
                         "venue_t_from": a["venue_t_to"], "venue_t_to": a["venue_t_to"] + b["clip_t"] - a["clip_t"]})
@@ -969,7 +1006,9 @@ def human_verdict(r: dict) -> str:
     st = r["stamp"]
     p_statuses = [p.get("l1_status") for p in pieces]
     scored = [s for s in p_statuses if s and s != "too short"]
-    if st == "present" and (not scored or not all(s == "present" for s in scored)):
+    if not scored:
+        st = "inconclusive"
+    elif st == "present" and not all(s == "present" for s in scored):
         st = "inconclusive" if ("present" in scored or "inconclusive" in scored) else "absent"
     head = {"present": f"Recorded at {where}.",
             "inconclusive": f"Matches {where}; room stamp inconclusive.",

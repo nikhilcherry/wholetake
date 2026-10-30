@@ -12,8 +12,10 @@ the second's first sample hit the DAC). The key itself is never logged, only key
 """
 from __future__ import annotations
 
+import dataclasses
 import gc
 import json
+import math
 import os
 import platform
 import queue
@@ -66,23 +68,29 @@ class Emitter:
     def __init__(self, key: bytes, params: StampParams, log_dir: str = "logs", wav_in: str | None = None,
                  loop_wav: bool = True, out_device=None, in_device=None, hostapi: str | None = "WASAPI",
                  save_output: bool = False, quiet: bool = False, latency: float | None = None):
-        self.key, self.p, self.log_dir, self.quiet = key, params, log_dir, quiet
-        self.use_input = params.mode in ("pa", "table") and in_device != "none"
+        self.key, self.p, self.log_dir, self.quiet = key, dataclasses.replace(params), log_dir, quiet
+        self.use_input = self.p.mode in ("pa", "table") and in_device != "none"
         self.save_output = save_output
         # Python callbacks occasionally stall 25-40 ms (GIL/GC); WASAPI fills a starved
         # buffer with silence *without* flagging an underflow, so the buffer must be larger
         # than any stall. Measured on this laptop (25 s runs): 30 ms slips ~40 ms, 50 ms ~20 ms,
         # 80 and 100 ms slip 0. pa mode uses 80 ms (live voice through the PA lags ~85 ms).
-        self.latency = latency if latency is not None else (0.08 if params.mode == "pa" else 0.1)
+        if latency is not None:
+            if isinstance(latency, bool) or not isinstance(latency, (int, float, np.floating)):
+                raise ValueError(f"latency must be a finite positive number, got {latency!r}")
+            latency = float(latency)
+            if not math.isfinite(latency) or latency <= 0.0:
+                raise ValueError(f"latency must be > 0 and finite, got {latency!r}")
+        self.latency = latency if latency is not None else (0.08 if self.p.mode == "pa" else 0.1)
         self.hostapi = hostapi
         self.out_dev = find_device(out_device, "output", hostapi)
         self.in_dev = find_device(None if in_device == "none" else in_device, "input", hostapi) if self.use_input else None
-        if params.mode == "table" and not self.use_input and params.l1_floor < 1.0:
+        if self.p.mode == "table" and not self.use_input and self.p.l1_floor < 1.0:
             print("[roomstamp] table mode without a mic: gating off (--l1-floor 1.0), feed will be empty")
-            params.l1_floor = 1.0
+            self.p.l1_floor = 1.0
         self.silent_secs = 0
         self.file_audio = None
-        if params.mode == "file":
+        if self.p.mode == "file":
             if not wav_in:
                 raise SystemExit("--wav-in is required for --mode file")
             self.file_audio = wavio.read(wav_in)
@@ -93,7 +101,7 @@ class Emitter:
         os.makedirs(log_dir, exist_ok=True)
 
         self.drand = DrandCache()
-        self.stamper = engine.Stamper(params)
+        self.stamper = engine.Stamper(self.p)
         self.prepared: dict[int, engine.PreparedSecond] = {}
         self.q: queue.SimpleQueue = queue.SimpleQueue()
         self.n = 0                       # samples emitted
@@ -140,6 +148,7 @@ class Emitter:
         else:
             x = np.zeros(frames)
 
+        x = np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
         state = (self.stamper.ref_rms, self.stamper.gain) if pos == 0 else None   # logged: lets a verifier start mid-session
         out, stamp, st = self.stamper.process(x, self.prepared.get(t), pos)
         # fades are emitter-only (first 0.2 s / last 0.1 s of a session); verifiers skip them
@@ -158,74 +167,20 @@ class Emitter:
 
     # ---- main --------------------------------------------------------------------------
     def run(self, duration: float | None = None) -> str:
-        self.drand.start()
-        for _ in range(30):            # give the first poll up to 3 s, never more
-            if self.drand.last_ok:
-                break
-            time.sleep(0.1)
-        if not self.drand.last_ok:
-            print("[roomstamp] WARNING: drand unreachable; seconds will be UNANCHORED until it recovers")
-        self.t_start = int(time.time()) + START_DELAY
-        self.seq = engine.KeystreamSequencer(self.key, self.t_start,
-                                             self.p.l2_delta_db if self.p.mode != "table" else 0.0, self._randomness)
-        for _ in range(LEAD_SECONDS):
-            ps = self.seq.next()
-            self.prepared[ps.ks.t] = ps
-        threading.Thread(target=self._producer, daemon=True, name="producer").start()
-
-        out_info = sd.query_devices(self.out_dev if self.out_dev is not None else sd.default.device[1])
-        n_out = min(2, out_info["max_output_channels"])
-        extra = None
-        if self.hostapi and "wasapi" in self.hostapi.lower():
-            extra = sd.WasapiSettings(auto_convert=True)
-        kw = dict(samplerate=FS, blocksize=BLOCK, dtype="float32", latency=self.latency)
-        if self.use_input:
-            stream = sd.Stream(device=(self.in_dev, self.out_dev), channels=(1, n_out),
-                               extra_settings=(extra, extra) if extra else None, callback=self._callback, **kw)
-        else:
-            stream = sd.OutputStream(device=self.out_dev, channels=n_out, extra_settings=extra,
-                                     callback=lambda o, f, ti, s: self._callback(None, o, f, ti, s), **kw)
-
-        tag = f"{self.t_start}"
-        log_path = os.path.join(self.log_dir, f"session_{tag}.jsonl")
-        feed_path = os.path.join(self.log_dir, f"feed_{tag}.wav")
-        out_path = os.path.join(self.log_dir, f"out_{tag}.wav") if self.save_output else None
-        lat = stream.latency
-        header = {
-            "type": "session", "spec": spec.SPEC_VERSION, "key_id": spec.key_id(self.key), "t_start": self.t_start,
-            "fs": FS, "block": BLOCK, "params": self.p.as_log(), "round_lag": spec.ROUND_LAG,
-            "drand_chain": spec.DRAND_CHAIN,
-            "warmup": {"t": self.seq.warmup.t, "round": self.seq.warmup.round, "anchored": self.seq.warmup.anchored,
-                       "randomness": self.seq.warmup.randomness.hex() if self.seq.warmup.randomness else None},
-            "devices": {"out": out_info["name"], "in": sd.query_devices(self.in_dev)["name"] if self.use_input and self.in_dev is not None else None,
-                        "hostapi": self.hostapi, "latency_s": list(lat) if isinstance(lat, tuple) else lat},
-            "feed_wav": os.path.basename(feed_path), "out_wav": os.path.basename(out_path) if out_path else None,
-            "feed_source": {"pa": "input", "table": "input", "file": "wav"}[self.p.mode],
-            "versions": {"python": platform.python_version(), "numpy": np.__version__, "scipy": scipy.__version__},
-            "note": "feed sample i and output sample i share the stream clock; output sample i belongs to second t_start + i // fs",
-        }
-        feed = wavio.StreamWriter(feed_path)
-        outw = wavio.StreamWriter(out_path) if out_path else None
-        logf = open(log_path, "w", encoding="utf-8")
-        logf.write(json.dumps(header) + "\n")
-        logf.flush()
-
-        print(f"[roomstamp] {spec.SPEC_VERSION} mode={self.p.mode} key_id={header['key_id']} out='{out_info['name']}'"
-              f"{' in=' + str(header['devices']['in']) if self.use_input else ''}")
-        print(f"[roomstamp] log {log_path}  feed {feed_path}  (Ctrl+C to stop)")
-
-        # Start at t_start. PortAudio pre-fills the whole buffer immediately, so sample 0
-        # reaches the DAC ~t_start (measured; subtracting the latency put it ~90 ms early).
-        # The exact DAC time of every second is logged anyway (dac_utc / drift_ms).
-        wait = self.t_start - time.time()
-        if wait > 0:
-            time.sleep(wait)
-        gc.disable()   # cyclic GC pauses stall the callback; refcounting still frees memory
+        if duration is not None:
+            if isinstance(duration, bool) or not isinstance(duration, (int, float, np.floating)):
+                raise ValueError(f"duration must be a finite positive number, got {duration!r}")
+            duration = float(duration)
+            if not math.isfinite(duration) or duration <= 0.0:
+                raise ValueError(f"duration must be > 0 and finite, got {duration!r}")
+        was_gc_enabled = gc.isenabled()
         old_switch = sys.getswitchinterval()
-        sys.setswitchinterval(0.0005)   # hand the GIL to the audio thread fast (default 5 ms)
-        stream.start()
-
-        cur = None   # per-second accumulator
+        stream = None
+        feed = None
+        outw = None
+        logf = None
+        cur = None
+        producer_thread = None
 
         def handle_item(item):
             nonlocal cur
@@ -244,36 +199,128 @@ class Emitter:
                 cur["miss"] += st.missing; cur["uf"] += uf; cur["of"] += of; cur["howl"] += st.howl
 
         try:
-            while True:
-                try:
-                    item = self.q.get(timeout=0.2)
-                except queue.Empty:
-                    item = None
-                if item is not None:
-                    handle_item(item)
-                if self.stopping and self.fade_left == 0:
+            self.drand.start()
+            for _ in range(30):            # give the first poll up to 3 s, never more
+                if self.drand.last_ok:
                     break
-                if duration and self.n >= duration * FS and not self.stopping:
-                    self.stopping = True
-        except KeyboardInterrupt:
-            self.stopping = True
-            print("\n[roomstamp] fading out...")
-            time.sleep(0.25)
+                time.sleep(0.1)
+            if not self.drand.last_ok:
+                print("[roomstamp] WARNING: drand unreachable; seconds will be UNANCHORED until it recovers")
+            self.t_start = int(time.time()) + START_DELAY
+            self.seq = engine.KeystreamSequencer(self.key, self.t_start,
+                                                 self.p.l2_delta_db if self.p.mode != "table" else 0.0, self._randomness)
+            for _ in range(LEAD_SECONDS):
+                ps = self.seq.next()
+                self.prepared[ps.ks.t] = ps
+            producer_thread = threading.Thread(target=self._producer, daemon=True, name="producer")
+            producer_thread.start()
+
+            out_info = sd.query_devices(self.out_dev if self.out_dev is not None else sd.default.device[1])
+            n_out = min(2, out_info["max_output_channels"])
+            extra = None
+            if self.hostapi and "wasapi" in self.hostapi.lower():
+                extra = sd.WasapiSettings(auto_convert=True)
+            kw = dict(samplerate=FS, blocksize=BLOCK, dtype="float32", latency=self.latency)
+            if self.use_input:
+                stream = sd.Stream(device=(self.in_dev, self.out_dev), channels=(1, n_out),
+                                   extra_settings=(extra, extra) if extra else None, callback=self._callback, **kw)
+            else:
+                stream = sd.OutputStream(device=self.out_dev, channels=n_out, extra_settings=extra,
+                                         callback=lambda o, f, ti, s: self._callback(None, o, f, ti, s), **kw)
+
+            tag = f"{self.t_start}"
+            log_path = os.path.join(self.log_dir, f"session_{tag}.jsonl")
+            feed_path = os.path.join(self.log_dir, f"feed_{tag}.wav")
+            out_path = os.path.join(self.log_dir, f"out_{tag}.wav") if self.save_output else None
+            lat = stream.latency
+            header = {
+                "type": "session", "spec": spec.SPEC_VERSION, "key_id": spec.key_id(self.key), "t_start": self.t_start,
+                "fs": FS, "block": BLOCK, "params": self.p.as_log(), "round_lag": spec.ROUND_LAG,
+                "drand_chain": spec.DRAND_CHAIN,
+                "warmup": {"t": self.seq.warmup.t, "round": self.seq.warmup.round, "anchored": self.seq.warmup.anchored,
+                           "randomness": self.seq.warmup.randomness.hex() if self.seq.warmup.randomness else None},
+                "devices": {"out": out_info["name"], "in": sd.query_devices(self.in_dev)["name"] if self.use_input and self.in_dev is not None else None,
+                            "hostapi": self.hostapi, "latency_s": list(lat) if isinstance(lat, tuple) else lat},
+                "feed_wav": os.path.basename(feed_path), "out_wav": os.path.basename(out_path) if out_path else None,
+                "feed_source": {"pa": "input", "table": "input", "file": "wav"}[self.p.mode],
+                "versions": {"python": platform.python_version(), "numpy": np.__version__, "scipy": scipy.__version__},
+                "note": "feed sample i and output sample i share the stream clock; output sample i belongs to second t_start + i // fs",
+            }
+            feed = wavio.StreamWriter(feed_path)
+            outw = wavio.StreamWriter(out_path) if out_path else None
+            logf = open(log_path, "w", encoding="utf-8")
+            logf.write(json.dumps(header) + "\n")
+            logf.flush()
+
+            print(f"[roomstamp] {spec.SPEC_VERSION} mode={self.p.mode} key_id={header['key_id']} out='{out_info['name']}'"
+                  f"{' in=' + str(header['devices']['in']) if self.use_input else ''}")
+            print(f"[roomstamp] log {log_path}  feed {feed_path}  (Ctrl+C to stop)")
+
+            # Start at t_start. PortAudio pre-fills the whole buffer immediately, so sample 0
+            # reaches the DAC ~t_start (measured; subtracting the latency put it ~90 ms early).
+            # The exact DAC time of every second is logged anyway (dac_utc / drift_ms).
+            wait = self.t_start - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            gc.disable()   # cyclic GC pauses stall the callback; refcounting still frees memory
+            sys.setswitchinterval(0.0005)   # hand the GIL to the audio thread fast (default 5 ms)
+            stream.start()
+
+            try:
+                while True:
+                    try:
+                        item = self.q.get(timeout=0.2)
+                    except queue.Empty:
+                        item = None
+                    if item is not None:
+                        handle_item(item)
+                    if self.stopping and self.fade_left == 0:
+                        break
+                    if duration is not None and self.n >= duration * FS and not self.stopping:
+                        self.stopping = True
+            except KeyboardInterrupt:
+                self.stopping = True
+                print("\n[roomstamp] fading out...")
+                time.sleep(0.25)
         finally:
-            gc.enable()
+            if was_gc_enabled:
+                gc.enable()
+            else:
+                gc.disable()
             sys.setswitchinterval(old_switch)
-            stream.stop()
-            stream.close()
-            while not self.q.empty():   # flush what was already played
-                handle_item(self.q.get_nowait())
-            if cur:
-                self._emit(logf, cur)
+            if stream is not None:
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            if feed is not None and logf is not None:
+                while not self.q.empty():   # flush what was already played
+                    handle_item(self.q.get_nowait())
+                if cur:
+                    self._emit(logf, cur)
             self.done.set()
+            if producer_thread is not None and producer_thread.is_alive():
+                producer_thread.join(timeout=1.0)
             self.drand.stop()
-            feed.close()
-            if outw:
-                outw.close()
-            logf.close()
+            if feed is not None:
+                try:
+                    feed.close()
+                except Exception:
+                    pass
+            if outw is not None:
+                try:
+                    outw.close()
+                except Exception:
+                    pass
+            if logf is not None:
+                try:
+                    logf.close()
+                except Exception:
+                    pass
         print(f"[roomstamp] stopped after {self.n / FS:.1f}s; log {log_path}")
         return log_path
 

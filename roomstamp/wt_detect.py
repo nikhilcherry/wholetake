@@ -161,16 +161,52 @@ def _decode_ffmpeg(path: str) -> tuple[np.ndarray, int, str]:
 
 def _downmix(x: np.ndarray, warnings: list[str], sr: int = FS) -> np.ndarray:
     """Average two channels unless they would cancel (inverted/independent mics): then keep
-    the channel with more 300-3400 Hz energy."""
+    the channel with more 300-3400 Hz energy. For >2 channels, pick the highest-energy speech
+    channel as reference and average correlated active channels."""
     if x.shape[1] == 1:
         return x[:, 0]
-    L, R = x[:, 0], x[:, 1]
-    if np.allclose(L, R):
-        return L.copy()
     sos = SOS_L1
     if sr != FS and sr > 700:
         from scipy.signal import butter
         sos = butter(4, [300.0, min(3400.0, 0.45 * sr)], btype="bandpass", fs=sr, output="sos")
+    if x.shape[1] > 2:
+        n, ch = x.shape
+        blk = max(1, sr // 2)
+        nb = n // blk
+        if nb >= 2:
+            xb = x[:nb * blk].reshape(nb, blk, ch)
+            e = np.sum(np.mean((xb - xb.mean(axis=1, keepdims=True)) ** 2, axis=1), axis=1)
+            emax = float(np.max(e))
+            if emax > 0:
+                keep = np.flatnonzero(e >= 0.05 * emax)
+                if len(keep) > 60:
+                    top = np.argsort(e[keep])[-60:]
+                    keep = np.sort(keep[top])
+                xa = xb[keep].reshape(-1, ch)
+            else:
+                xa = x[:min(n, 10 * sr)]
+        else:
+            xa = x
+        yb = sosfilt(sos, xa, axis=0)
+        ech = np.sum(yb * yb, axis=0)
+        ref = int(np.argmax(ech))
+        if ech[ref] <= 0:
+            return np.mean(x, axis=1)
+        ref_y = yb[:, ref]
+        ref_e = float(ech[ref])
+        keep_ch = [ref]
+        for c in range(ch):
+            if c == ref or ech[c] < 0.05 * ref_e:
+                continue
+            rho_c = float(np.sum(ref_y * yb[:, c]) / (np.sqrt(ref_e * float(ech[c])) + 1e-20))
+            if rho_c >= 0.3:
+                keep_ch.append(c)
+        if len(keep_ch) == 1:
+            return x[:, ref].copy()
+        return np.mean(x[:, keep_ch], axis=1)
+    L, R = x[:, 0], x[:, 1]
+    if np.allclose(L, R):
+        return L.copy()
     n = len(L)
     blk = max(1, sr // 2)
     nb = n // blk
@@ -201,6 +237,20 @@ def _downmix(x: np.ndarray, warnings: list[str], sr: int = FS) -> np.ndarray:
     return 0.5 * (L + R)
 
 
+def _resample_to_fs(m: np.ndarray, sr: int) -> np.ndarray:
+    if sr == FS or len(m) == 0:
+        return m
+    g = int(np.gcd(sr, FS))
+    up, down = FS // g, sr // g
+    if max(up, down) > MAX_RESAMPLE_FACTOR:
+        from fractions import Fraction
+        frac = Fraction(FS, sr).limit_denominator(MAX_RESAMPLE_FACTOR)
+        up, down = frac.numerator, frac.denominator
+    if up != down:
+        m = resample_poly(m, up, down)
+    return m
+
+
 def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
     if not os.path.isfile(path):
         raise ClipError("NOT_FOUND", f"no such file: {path}")
@@ -224,16 +274,8 @@ def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
         raise ClipError("DECODE_FAILED", "non-finite audio samples")
     warnings: list[str] = []
     ch = x.shape[1]
-    m = _downmix(x[:, :2], warnings, sr=sr)
-    if sr != FS:
-        g = int(np.gcd(sr, FS))
-        up, down = FS // g, sr // g
-        if max(up, down) > MAX_RESAMPLE_FACTOR:
-            from fractions import Fraction
-            frac = Fraction(FS, sr).limit_denominator(MAX_RESAMPLE_FACTOR)
-            up, down = frac.numerator, frac.denominator
-        if up != down:
-            m = resample_poly(m, up, down)
+    m = _downmix(x, warnings, sr=sr)
+    m = _resample_to_fs(m, sr)
     dur = len(m) / FS
     if dur < MIN_CLIP_S and raw_dur < MIN_CLIP_S:
         raise ClipError("TOO_SHORT", f"clip is {dur:.1f} s; need at least {MIN_CLIP_S:.0f} s")
@@ -280,10 +322,23 @@ class SessionLog:
     def dac_utc(self, t: int) -> float | None:
         i = t - self.t_start
         if 0 <= i < len(self.secs) and self.secs[i].get("t") == t:
-            return self.secs[i].get("dac_utc")
+            d = self.secs[i].get("dac_utc")
+            try:
+                f = float(d) if d is not None and not isinstance(d, bool) else None
+                if f is not None and np.isfinite(f):
+                    return f
+            except (TypeError, ValueError):
+                pass
         for s in self.secs:
             if s.get("t") == t:
-                return s.get("dac_utc")
+                d = s.get("dac_utc")
+                try:
+                    f = float(d) if d is not None and not isinstance(d, bool) else None
+                    if f is not None and np.isfinite(f):
+                        return f
+                except (TypeError, ValueError):
+                    pass
+                return None
         return None
 
     def wall(self, t_nominal: float) -> float:
@@ -293,10 +348,21 @@ class SessionLog:
         if d is not None:
             return float(d + (t_nominal - t_sec))
         if self.secs:
-            valid = [s for s in self.secs if s.get("dac_utc") is not None and s.get("t") is not None]
+            valid = []
+            for s in self.secs:
+                try:
+                    dv = s.get("dac_utc")
+                    tv = s.get("t")
+                    if dv is None or tv is None or isinstance(dv, bool) or isinstance(tv, bool):
+                        continue
+                    df, tf = float(dv), float(tv)
+                    if np.isfinite(df) and np.isfinite(tf):
+                        valid.append((tf, df))
+                except (TypeError, ValueError):
+                    continue
             if valid:
-                nearest = min(valid, key=lambda s: abs(int(s["t"]) - t_sec))
-                return float(nearest["dac_utc"]) + (t_nominal - float(nearest["t"]))
+                nearest_t, nearest_d = min(valid, key=lambda pair: abs(int(pair[0]) - t_sec))
+                return float(nearest_d + (t_nominal - nearest_t))
         return float(t_nominal)
 
     def session(self, t0_offset_s: int = 0) -> Session:
@@ -304,14 +370,21 @@ class SessionLog:
         per-second log records, so S2 re-renders with exactly the randomness the emitter used
         (anchored seconds only, never fetched) and seeds the stamper from the logged state."""
         secs = {int(s["t"]): s for s in self.secs}
-        if self.header.get("warmup"):
-            secs.setdefault(int(self.header["warmup"]["t"]), self.header["warmup"])
+        warmup = self.header.get("warmup")
+        if isinstance(warmup, dict):
+            try:
+                secs.setdefault(int(warmup["t"]), warmup)
+            except (KeyError, TypeError, ValueError):
+                pass
         return Session(key_id=self.key_id, t_start=self.t_start + t0_offset_s, params=self.params,
                        feed=self.feed_path or "", venue=self.venue_name, secs=secs, path=None)
 
 
+MAX_SESSION_SPAN_S = 86400 * 7
+
+
 def load_session_log(path: str, venue_name: str) -> SessionLog:
-    header, secs = None, []
+    header, raw_secs = None, []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -328,24 +401,43 @@ def load_session_log(path: str, venue_name: str) -> SessionLog:
                     header = r
             elif r.get("type") == "sec":
                 try:
+                    if isinstance(r.get("t"), bool):
+                        continue
                     r["t"] = int(r["t"])
-                    secs.append(r)
                 except (KeyError, TypeError, ValueError):
                     continue
+                if "dac_utc" in r and r["dac_utc"] is not None:
+                    try:
+                        if isinstance(r["dac_utc"], bool):
+                            r["dac_utc"] = None
+                        else:
+                            d_val = float(r["dac_utc"])
+                            r["dac_utc"] = d_val if np.isfinite(d_val) else None
+                    except (TypeError, ValueError):
+                        r["dac_utc"] = None
+                raw_secs.append(r)
     if header is None:
         raise ValueError(f"{path}: no session header")
     if header.get("spec") not in (None, spec.SPEC_VERSION):
         raise ValueError(f"{path}: spec {header.get('spec')!r}, wt-detect speaks {spec.SPEC_VERSION!r}")
-    secs.sort(key=lambda s: s["t"])
+    t0 = int(header["t_start"])
+    by_t: dict[int, dict] = {}
+    for s in raw_secs:
+        if t0 <= s["t"] <= t0 + MAX_SESSION_SPAN_S:
+            by_t[s["t"]] = s
+    secs = [by_t[t] for t in sorted(by_t)]
     feed = header.get("feed_wav")
     feed_path = os.path.join(os.path.dirname(os.path.abspath(path)), feed) if feed else None
     if feed_path and not os.path.isfile(feed_path):
         feed_path = None
-    t0 = int(header["t_start"])
     t_end = int(secs[-1]["t"]) + 1 if secs else t0
     if feed_path and not secs:
         import soundfile as sf
-        t_end = t0 + int(np.ceil(sf.info(feed_path).frames / FS))
+        try:
+            info = sf.info(feed_path)
+            t_end = t0 + max(0, int(np.ceil(info.frames / max(1, info.samplerate))))
+        except Exception:
+            t_end = t0
     p = engine.StampParams(**{k: v for k, v in header["params"].items() if k in engine.StampParams.__dataclass_fields__})
     return SessionLog(sid=os.path.splitext(os.path.basename(path))[0], path=os.path.abspath(path), header=header,
                       secs=secs, t_start=t0, t_end=t_end, key_id=header["key_id"], params=p, feed_path=feed_path,
@@ -375,12 +467,36 @@ def _env(x: np.ndarray, zi=None):
 def _feed_env(path: str) -> tuple[np.ndarray, float]:
     """Envelope of the whole feed (streamed) and its RMS in dBFS."""
     import soundfile as sf
+    info = sf.info(path)
+    sr = int(info.samplerate)
+    if sr < MIN_SR or sr > MAX_SR:
+        raise ValueError(f"unsupported feed sample rate: {sr} Hz")
     parts, zi, ss, n = [], None, 0.0, 0
-    for blk in sf.blocks(path, blocksize=ENV_HOP * 2000, dtype="float64", always_2d=True):
-        m = blk.mean(axis=1)
-        ss, n = ss + float(np.sum(m * m)), n + len(m)
-        e, zi = _env(m, zi)
-        parts.append(e)
+    if sr == FS:
+        for blk in sf.blocks(path, blocksize=ENV_HOP * 2000, dtype="float64", always_2d=True):
+            m = blk[:, 0] if blk.shape[1] == 1 else _downmix(blk, [], sr=FS)
+            ss, n = ss + float(np.sum(m * m)), n + len(m)
+            e, zi = _env(m, zi)
+            parts.append(e)
+    else:
+        blk_sz = max(ENV_HOP, int(round(ENV_HOP * 2000 * sr / FS)))
+        rem = np.zeros(0, dtype=np.float64)
+        for blk in sf.blocks(path, blocksize=blk_sz, dtype="float64", always_2d=True):
+            m = blk[:, 0] if blk.shape[1] == 1 else _downmix(blk, [], sr=sr)
+            m = _resample_to_fs(m, sr)
+            if len(rem):
+                m = np.concatenate((rem, m))
+            nf = (len(m) // ENV_HOP) * ENV_HOP
+            if nf > 0:
+                chunk = m[:nf]
+                ss, n = ss + float(np.sum(chunk * chunk)), n + len(chunk)
+                e, zi = _env(chunk, zi)
+                parts.append(e)
+            rem = m[nf:]
+        if len(rem) >= ENV_HOP:
+            ss, n = ss + float(np.sum(rem * rem)), n + len(rem)
+            e, zi = _env(rem, zi)
+            parts.append(e)
     rms_db = 10 * np.log10(ss / max(n, 1) + 1e-24)
     return (np.concatenate(parts) if parts else np.zeros(0)), float(rms_db)
 
@@ -388,9 +504,22 @@ def _feed_env(path: str) -> tuple[np.ndarray, float]:
 def _hp_env(e: np.ndarray) -> np.ndarray:
     if len(e) == 0:
         return e
-    active = e[e >= np.percentile(e, 95) - 3.0]
-    floor = np.percentile(active if len(active) else e, 20)
-    e = np.maximum(e, floor)                       # pauses -> floor, so silence doesn't dominate
+    nz = e[e > -11.5]
+    if len(nz) == 0:
+        nz = e
+    p15, p75 = (float(x) for x in np.percentile(nz, [15, 75]))
+    if p75 < -5.5 and p75 - p15 < 0.35:
+        above = nz[nz > p75 + 0.4]
+        if len(above) >= 20:
+            nz = above
+            p75 = float(np.percentile(nz, 75))
+    ref = min(float(np.percentile(nz, 95)), p75 + 1.0)
+    cap = ref + 1.0
+    active = nz[(nz >= ref - 3.0) & (nz <= cap)]
+    if len(active) == 0:
+        active = nz[nz >= ref - 3.0]
+    floor = float(np.percentile(active if len(active) else nz, 20))
+    e = np.clip(e, floor, cap)                     # pauses -> floor, transients -> cap
     k = np.ones(101) / 101
     pad = np.pad(e, 50, mode="edge")
     return e - np.convolve(pad, k, mode="valid")
@@ -400,6 +529,20 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
     """Rough position of the clip in this session's feed via 10 ms log-energy envelopes."""
     if not sl.feed_path:
         return
+    import soundfile as sf
+    try:
+        info = sf.info(sl.feed_path)
+        sr = int(info.samplerate)
+    except Exception as e:
+        warnings.append(f"feed_unusable: {sl.sid} feed could not be read ({e}); informed check skipped")
+        sl.feed_path = None
+        return
+    if sr < MIN_SR or sr > MAX_SR:
+        warnings.append(f"feed_unusable: {sl.sid} feed has unsupported sample rate ({sr} Hz); informed check skipped")
+        sl.feed_path = None
+        return
+    if sr != FS:
+        warnings.append(f"feed_resampled: {sl.sid} feed is {sr} Hz (expected {FS} Hz); resampled to {FS} Hz")
     fe, rms_db = _feed_env(sl.feed_path)
     if rms_db < FEED_SILENT_DBFS:
         warnings.append(f"feed_silent: {sl.sid} recorded no clean feed ({rms_db:.0f} dBFS); "
@@ -488,10 +631,18 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
 
 def _read_feed(path: str, s0: int, s1: int) -> np.ndarray:
     import soundfile as sf
-    x, sr = sf.read(path, start=s0, stop=s1, dtype="float64", always_2d=True)
-    if sr != FS:
+    info = sf.info(path)
+    sr = int(info.samplerate)
+    if sr == FS:
+        x, _ = sf.read(path, start=s0, stop=s1, dtype="float64", always_2d=True)
+        return _downmix(x, [], sr=FS)
+    if sr < MIN_SR or sr > MAX_SR:
         raise ValueError(f"feed {path} is {sr} Hz, expected {FS}")
-    return x.mean(axis=1)
+    n0 = max(0, int(round(s0 * sr / FS)))
+    n1 = max(n0, min(info.frames, int(round(s1 * sr / FS))))
+    x, _ = sf.read(path, start=n0, stop=n1, dtype="float64", always_2d=True)
+    m = _downmix(x, [], sr=sr)
+    return _resample_to_fs(m, sr)
 
 
 def _refine_piece_margins(clip_x: np.ndarray, feed: np.ndarray, sess_t_start: int, pieces: list[dict],
@@ -604,7 +755,14 @@ def run_l1(clip: Clip, sl: SessionLog, key: bytes, warnings: list[str]) -> tuple
     if not sl.feed_path:
         return _stage("skipped", summary="session has no clean feed recording"), None
     import soundfile as sf
-    n_feed = sf.info(sl.feed_path).frames
+    info = sf.info(sl.feed_path)
+    sr = int(info.samplerate)
+    if sr < MIN_SR or sr > MAX_SR:
+        warnings.append(f"feed_unusable: {sl.sid} feed has unsupported sample rate ({sr} Hz); informed check skipped")
+        return _stage("skipped", summary=f"session feed has unsupported sample rate ({sr} Hz)"), None
+    if sr != FS and not any(w.startswith(f"feed_resampled: {sl.sid} ") for w in warnings):
+        warnings.append(f"feed_resampled: {sl.sid} feed is {sr} Hz (expected {FS} Hz); resampled to {FS} Hz")
+    n_feed = info.frames if sr == FS else int(round(info.frames * FS / sr))
     if sl.env_z >= ENV_Z_MIN and sl.feed_offset_s is not None:
         margin = SLICE_MARGIN_S + 0.5 * clip.duration_s
         lo, hi = sl.feed_span_s or (sl.feed_offset_s, sl.feed_offset_s + clip.duration_s)
@@ -702,10 +860,15 @@ def _run_l1_minimal(clip: Clip, sess: Session, key: bytes, feed: np.ndarray, t: 
     l1 = r["l1"]
     frac = l1["frac_z5"] if l1["clip_z"] >= detect.CLIP_Z_MIN else 0.0
     status = "present" if frac >= 0.20 else ("inconclusive" if frac >= 0.05 else "absent")
-    rec_at = sess.t_start - r["lag_samples"] / FS
+    content_match = bool(r["speech_removed_db"] > 6.0)
+    if content_match or status == "present":
+        rec_at = sess.t_start - r["lag_samples"] / FS
+        vt0, vt1 = rec_at, rec_at + clip.duration_s
+    else:
+        rec_at = vt0 = vt1 = None
     st = _stage(status, "s1-minimal", detect.verdict(r), z=l1["clip_z"], recorded_at_unix=rec_at,
-                venue_t_start=rec_at, venue_t_end=rec_at + clip.duration_s,
-                content_match=r["speech_removed_db"] > 6.0, integrity_checked=False, detail=r)
+                venue_t_start=vt0, venue_t_end=vt1,
+                content_match=content_match, integrity_checked=False, detail=r)
     st["elapsed_s"] = round(time.time() - t, 2)
     return st
 
@@ -859,9 +1022,10 @@ def iso_time(t: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", tt) + f".{ms:03d}{sign}{hh:02d}:{mm:02d}"
 
 
-def fmt_clock(s: float) -> str:
-    s = int(round(max(0.0, s)))
-    return f"{s // 60}:{s % 60:02d}"
+def fmt_clock(s: float | None) -> str:
+    v = float(s) if (s is not None and np.isfinite(s)) else 0.0
+    sec = int(round(max(0.0, v)))
+    return f"{sec // 60}:{sec % 60:02d}"
 
 
 def _kinds_compatible(k1: str | None, k2: str | None) -> bool:
@@ -873,22 +1037,65 @@ def _kinds_compatible(k1: str | None, k2: str | None) -> bool:
     return False
 
 
+def _pick_time_source(layers: dict) -> tuple[float | None, float | None, str | None]:
+    """Pick (recorded_at_unix, precision_s, source) ranking 'present' layers above
+    'likely'/'inconclusive' layers, and L1 > L2 > witness within each tier."""
+    order = (("l1", 0.01), ("l2", 0.02), ("wt", 0.1))
+    for k, p in order:
+        st = layers.get(k) or {}
+        ok = st.get("status") == "present" and (k != "wt" or bool(st.get("content_match")))
+        if ok and st.get("recorded_at_unix") is not None:
+            return st["recorded_at_unix"], p, k
+    for k, p in order:
+        st = layers.get(k) or {}
+        if k == "l1":
+            ok = st.get("status") == "inconclusive" and bool(st.get("content_match"))
+        elif k == "l2":
+            ok = st.get("status") in ("likely", "inconclusive")
+        else:
+            ok = st.get("status") in ("likely", "inconclusive") and bool(st.get("content_match"))
+        if ok and st.get("recorded_at_unix") is not None:
+            return st["recorded_at_unix"], p, k
+    for k, p in order:
+        st = layers.get(k) or {}
+        if k != "l2" and bool(st.get("content_match")) and st.get("recorded_at_unix") is not None:
+            return st["recorded_at_unix"], p, k
+    for k, p in order:
+        st = layers.get(k) or {}
+        if st.get("status") in ("present", "likely", "inconclusive") and st.get("recorded_at_unix") is not None:
+            return st["recorded_at_unix"], p, k
+    return None, None, None
+
+
 def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
     """Precise sources win; a coarser edit near a precise one is the same edit."""
     warns = []
     rank = {"l1": 0, "wt": 1, "l2": 2}
-    integrity_covered = any(
-        (layers.get(k) or {}).get("integrity_checked") and (layers.get(k) or {}).get("content_match")
-        for k in ("l1", "wt")
-    )
     l1_st = layers.get("l1") or {}
     l2_st = layers.get("l2") or {}
     l1r, l2r = l1_st.get("recorded_at_unix"), l2_st.get("recorded_at_unix")
+    l1_time_ok = l1_st.get("status") == "present" or (
+        l1_st.get("status") == "inconclusive"
+        and bool(l1_st.get("content_match"))
+        and l2_st.get("status") != "present"
+    )
     l2_time_mismatch = (
-        l1_st.get("status") in ("present", "inconclusive")
+        l1_time_ok
         and l2_st.get("status") in ("present", "likely")
         and l1r is not None and l2r is not None
         and abs(l1r - l2r) > L1_TIME_MISMATCH_S
+    )
+    l1_unverified_mismatch = (
+        l2_st.get("status") == "present"
+        and l1_st.get("status") != "present"
+        and l1r is not None and l2r is not None
+        and abs(l1r - l2r) > L1_TIME_MISMATCH_S
+    )
+    integrity_covered = any(
+        (layers.get(k) or {}).get("integrity_checked")
+        and (layers.get(k) or {}).get("content_match")
+        and not (k == "l1" and l1_unverified_mismatch)
+        for k in ("l1", "wt")
     )
     pool = []
     for name in ("l1", "wt", "l2"):
@@ -899,34 +1106,39 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
             if name in ("l1", "wt") and not st.get("content_match"):
                 continue
             pool.extend(e for e in st["edits"] if e.get("kind") != "pause_trim")
-    pool.sort(key=lambda e: (rank.get(e.get("source"), 9), e.get("clip_t", 0)))
+    pool.sort(key=lambda e: (rank.get(e.get("source"), 9), float(e.get("clip_t") or 0.0)))
     out: list[dict] = []
     for e in pool:
+        ct_e = float(e.get("clip_t") or 0.0)
         r_e = e.get("clip_t_range")
-        lo = r_e[0] if (r_e and len(r_e) >= 2 and r_e[0] is not None) else e["clip_t"]
-        hi = r_e[1] if (r_e and len(r_e) >= 2 and r_e[1] is not None) else e["clip_t"]
+        lo = float(r_e[0]) if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[0] is not None) else ct_e
+        hi = float(r_e[1]) if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[1] is not None) else ct_e
         dup = None
+        best_key = None
         for k in out:
+            ct_k = float(k.get("clip_t") or 0.0)
             r_k = k.get("clip_t_range")
-            k_lo = r_k[0] if (r_k and len(r_k) >= 2 and r_k[0] is not None) else k["clip_t"]
-            k_hi = r_k[1] if (r_k and len(r_k) >= 2 and r_k[1] is not None) else k["clip_t"]
+            k_lo = float(r_k[0]) if (isinstance(r_k, (list, tuple)) and len(r_k) >= 2 and r_k[0] is not None) else ct_k
+            k_hi = float(r_k[1]) if (isinstance(r_k, (list, tuple)) and len(r_k) >= 2 and r_k[1] is not None) else ct_k
             if (
                 rank[k["source"]] < rank[e["source"]]
                 and _kinds_compatible(k.get("kind"), e.get("kind"))
                 and lo - 2.0 <= k_hi and k_lo <= hi + 2.0
             ):
-                dup = k
-                break
+                cand_key = (abs(ct_k - ct_e), rank[k["source"]])
+                if best_key is None or cand_key < best_key:
+                    best_key = cand_key
+                    dup = k
         if dup is None:
             out.append(dict(e))
             continue
         if e["source"] == "wt" and e.get("restored_text") and not dup.get("restored_text"):
             dup["restored_text"] = e["restored_text"]
         if e.get("removed_s") is not None and dup.get("removed_s") is not None \
-                and abs(e["removed_s"] - dup["removed_s"]) > max(0.15, 3 * e.get("precision_s", 0.1)):
+                and abs(e["removed_s"] - dup["removed_s"]) > max(0.15, 3 * (e.get("precision_s") or 0.1)):
             warns.append(f"edit_size_mismatch: {dup['source']} says {dup['removed_s']:.2f} s, "
-                         f"{e['source']} says {e['removed_s']:.2f} s near {fmt_clock(dup['clip_t'])}; using {dup['source']}")
-    out.sort(key=lambda e: e["clip_t"])
+                         f"{e['source']} says {e['removed_s']:.2f} s near {fmt_clock(dup.get('clip_t'))}; using {dup['source']}")
+    out.sort(key=lambda e: float(e.get("clip_t") or 0.0))
     for e in out:
         e.setdefault("restored_text", None)
         e.setdefault("restored_audio", None)
@@ -934,32 +1146,36 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
 
 
 def _edit_summary(edits: list[dict]) -> str:
-    cuts = [e for e in edits if e["kind"] == "removed"]
-    other = [e for e in edits if e["kind"] not in ("removed", "pause_trim")]
+    cuts = [e for e in edits if e.get("kind") == "removed"]
+    other = [e for e in edits if e.get("kind") not in ("removed", "pause_trim")]
     parts = []
     if len(cuts) == 1:
         e = cuts[0]
         rem = float(e.get("removed_s") or 0.0)
+        ct = float(e.get("clip_t") or 0.0)
         if e.get("source") == "l2":
-            a, b = e["clip_t_range"]
+            r_e = e.get("clip_t_range")
+            a = r_e[0] if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[0] is not None) else ct
+            b = r_e[1] if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[1] is not None) else ct
             parts.append(f"About {rem:.1f} s removed between {fmt_clock(a)} and {fmt_clock(b)}")
         else:
-            parts.append(f"{rem:.2f} s removed at {fmt_clock(e['clip_t'])}")
+            parts.append(f"{rem:.2f} s removed at {fmt_clock(ct)}")
     elif cuts:
         tot = sum(float(e.get("removed_s") or 0.0) for e in cuts)
-        parts.append(f"{len(cuts)} cuts ({tot:.2f} s removed in total, first at {fmt_clock(cuts[0]['clip_t'])})")
+        parts.append(f"{len(cuts)} cuts ({tot:.2f} s removed in total, first at {fmt_clock(cuts[0].get('clip_t'))})")
     for e in other:
-        if e["kind"] == "repeated":
+        ct = float(e.get("clip_t") or 0.0)
+        if e.get("kind") == "repeated":
             rem = float(e.get("removed_s") or 0.0)
-            parts.append(f"{-rem:.2f} s repeated at {fmt_clock(e['clip_t'])}")
-        elif e["kind"] == "replaced" and e.get("source_offset_s") is not None:
-            off = e["source_offset_s"]
-            parts.append(f"{(e.get('duration_s') or 0):.2f} s at {fmt_clock(e['clip_t'])} replaced with audio from "
+            parts.append(f"{-rem:.2f} s repeated at {fmt_clock(ct)}")
+        elif e.get("kind") == "replaced" and e.get("source_offset_s") is not None:
+            off = float(e["source_offset_s"])
+            parts.append(f"{float(e.get('duration_s') or 0.0):.2f} s at {fmt_clock(ct)} replaced with audio from "
                          f"{abs(off):.1f} s {'later' if off > 0 else 'earlier'} in the talk")
-        elif e["kind"] == "foreign":
-            parts.append(f"{(e.get('duration_s') or 0):.1f} s not from this venue at {fmt_clock(e['clip_t'])}")
+        elif e.get("kind") == "foreign":
+            parts.append(f"{float(e.get('duration_s') or 0.0):.1f} s not from this venue at {fmt_clock(ct)}")
         else:
-            parts.append(f"{e['kind']} at {fmt_clock(e['clip_t'])}")
+            parts.append(f"{e.get('kind')} at {fmt_clock(ct)}")
     return ". ".join(parts)
 
 
@@ -976,17 +1192,16 @@ def fuse(doc: dict) -> dict:
 
     edits, w = merge_edits(L)
     warns += w
-    # where & when: L1 (sample precise) > L2 (+-20 ms) > witness
-    rec, prec, src = None, None, None
-    for k, p in (("l1", 0.01), ("l2", 0.02), ("wt", 0.1)):
-        st = L.get(k) or {}
-        ok = st.get("status") in ("present", "likely", "inconclusive") or (k != "l2" and st.get("content_match"))
-        if ok and st.get("recorded_at_unix") is not None:
-            rec, prec, src = st["recorded_at_unix"], p, k
-            break
+    # where & when: present layers beat likely/inconclusive; within each tier L1 (sample precise) > L2 (+-20 ms) > witness
+    rec, prec, src = _pick_time_source(L)
     l1r, l2r = (L.get("l1") or {}).get("recorded_at_unix"), (L.get("l2") or {}).get("recorded_at_unix")
+    l1_time_ok = s["l1"] == "present" or (
+        s["l1"] == "inconclusive"
+        and bool((L.get("l1") or {}).get("content_match"))
+        and s["l2"] != "present"
+    )
     l2_time_mismatch = (
-        s["l1"] in ("present", "inconclusive")
+        l1_time_ok
         and s["l2"] in ("present", "likely")
         and l1r is not None and l2r is not None
         and abs(l1r - l2r) > L1_TIME_MISMATCH_S
@@ -1034,7 +1249,7 @@ def fuse(doc: dict) -> dict:
     unanchored = False
     if isinstance(proof, dict) and proof.get("session_id") is not None:
         af = proof.get("anchored_fraction")
-        if not proof.get("drand_rounds") or (af is not None and af == 0.0):
+        if (af is not None and af == 0.0) or (af is None and not proof.get("drand_rounds")):
             unanchored = True
         elif af is not None and af < 0.5:
             warns.append(
@@ -1105,7 +1320,7 @@ def fuse(doc: dict) -> dict:
     v.update({"recorded_here": recorded, "integrity": integrity, "headline": head, "x_reply_text": x,
               "recorded_at_unix": wall, "recorded_at_iso": iso_time(wall) if wall is not None else None,
               "recorded_at_precision_s": prec, "recorded_at_source": src,
-              "tempo_ratio": (L.get("l2") or {}).get("tempo") if (s["l2"] in ("present", "likely") and not l2_time_mismatch) else (1.0 if s["l1"] in ("present", "inconclusive") else None),
+              "tempo_ratio": (L.get("l2") or {}).get("tempo") if (s["l2"] in ("present", "likely") and not l2_time_mismatch) else (1.0 if l1_time_ok else None),
               "edits": edits, "content_match": bool(content),
               "confidence": {k: s[k] for k in ("l1", "l2", "wt")}})
     doc["pending_layers"] = pending
@@ -1198,6 +1413,8 @@ def _proof(sl: SessionLog | None, doc: dict, clip: Clip) -> dict:
             st = doc["layers"].get(k) or {}
             if st.get("status") == "absent":
                 continue
+            if k == "l1" and not (st.get("content_match") or st.get("status") == "present"):
+                continue
             vt0, vt1 = st.get("venue_t_start"), st.get("venue_t_end")
             if vt0 is not None and vt1 is not None:
                 lo, hi = min(vt0, vt1), max(vt0, vt1)
@@ -1209,12 +1426,21 @@ def _proof(sl: SessionLog | None, doc: dict, clip: Clip) -> dict:
         if a < b:
             d["matched_t_range"] = [a, b]
             secs = [s for s in sl.secs if a <= s["t"] < b]
-            d["anchors"] = [{"t": s["t"], "round": s.get("round"), "anchored": s.get("anchored"),
+            d["anchors"] = [{"t": s["t"],
+                             "round": s.get("round") if s.get("round") is not None else spec.round_for(int(s["t"])),
+                             "anchored": s.get("anchored"),
                              "randomness": s.get("randomness"), "anchor": s.get("anchor"),
                              "dac_utc": s.get("dac_utc")} for s in secs]
-            d["drand_rounds"] = sorted({s["round"] for s in secs if s.get("round") is not None and s.get("anchored")})
+            d["drand_rounds"] = sorted({
+                int(s["round"] if s.get("round") is not None else spec.round_for(int(s["t"])))
+                for s in secs if s.get("anchored")
+            })
             d["anchored_fraction"] = round(sl.session().anchored_fraction(a, b - 1), 4)
     elif sl and sl.secs:
+        d["drand_rounds"] = sorted({
+            int(s["round"] if s.get("round") is not None else spec.round_for(int(s["t"])))
+            for s in sl.secs if s.get("anchored")
+        })
         d["anchored_fraction"] = round(sl.session().anchored_fraction(sl.t_start, max(sl.t_start, sl.t_end - 1)), 4)
     return d
 
@@ -1225,9 +1451,19 @@ def _restore_audio(doc: dict, sl: SessionLog | None, out_path: str | None) -> No
         return
     from . import wavio
     stem = os.path.splitext(os.path.abspath(out_path))[0]
-    for i, e in enumerate(doc["layers"]["l1"].get("edits") or []):  # fuse() copies these into the verdict
-        if e["source"] != "l1" or e["kind"] != "removed" or e.get("venue_t_from") is None or e.get("venue_t_to") is None:
-            continue
+    l1_edits = doc["layers"]["l1"].get("edits") or []
+    removed_edits = sorted(
+        (
+            e for e in l1_edits
+            if e.get("source") == "l1"
+            and e.get("kind") == "removed"
+            and e.get("venue_t_from") is not None
+            and e.get("venue_t_to") is not None
+        ),
+        key=lambda e: float(e.get("clip_t") or 0.0),
+    )
+    idx = 0
+    for e in removed_edits:  # fuse() copies these into the verdict
         a = (e["venue_t_from"] - 1.5 - sl.t_start) * FS
         b = (e["venue_t_to"] + 1.5 - sl.t_start) * FS
         try:
@@ -1235,11 +1471,12 @@ def _restore_audio(doc: dict, sl: SessionLog | None, out_path: str | None) -> No
             x = _read_feed(sl.feed_path, s0, max(0, int(b)))
             if len(x) == 0:
                 continue
-            path = f"{stem}_edit{i}.wav"
+            path = f"{stem}_edit{idx}.wav"
             pk = np.max(np.abs(x)) + 1e-9
             wavio.write(path, x * min(1.0, 0.9 / pk))
             e["restored_audio"] = os.path.relpath(path, os.path.dirname(os.path.abspath(out_path)))
             e["restored_audio_venue_t"] = [sl.t_start + s0 / FS, sl.t_start + (s0 + len(x)) / FS]
+            idx += 1
         except Exception as ex:
             doc["warnings_base"].append(f"restored_audio_failed: {ex}")
 
@@ -1330,6 +1567,20 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     os.makedirs(work, exist_ok=True)
 
     sessions = find_sessions(venue_dir, vname, W) if key else []
+    if prev and session_log is None:
+        prev_argv = (prev.get("run") or {}).get("argv") or []
+        for i, arg in enumerate(prev_argv):
+            if arg == "--session" and i + 1 < len(prev_argv):
+                session_log = prev_argv[i + 1]
+                break
+            if isinstance(arg, str) and arg.startswith("--session="):
+                session_log = arg.split("=", 1)[1]
+                break
+        if session_log is None:
+            prev_sid = ((prev.get("verdict") or {}).get("venue") or {}).get("session")
+            prev_sp = (prev.get("session_match") or {}).get("path")
+            if prev_sp and os.path.isfile(prev_sp) and not any(s.sid == prev_sid for s in sessions):
+                session_log = prev_sp
     kid = spec.key_id(key) if key else None
     t_around = parse_time(around)
     cands = rank_sessions(sessions, kid, t_around, session_log, clip, W) if key else []
@@ -1343,7 +1594,8 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     tries = []
     if "l1" in want:
         best = None
-        for s in [c for c in cands if c.feed_path][:MAX_SESSION_TRIES]:
+        l1_cands = [c for c in cands if c.feed_path][:MAX_SESSION_TRIES]
+        for s in l1_cands:
             try:
                 st, _ = run_l1(clip, s, key, W)
             except Exception:
@@ -1354,7 +1606,13 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
             if st["status"] == "present":
                 break
         if best is not None:
-            L["l1"], sl = best
+            L["l1"] = best[0]
+            if (
+                best[0].get("status") in ("present", "inconclusive")
+                or best[0].get("content_match")
+                or (sl in l1_cands)
+            ):
+                sl = best[1]
         elif cands:
             L["l1"] = _stage("skipped", summary="no session for this key has a usable clean feed")
         else:
@@ -1365,7 +1623,7 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     if sl:
         doc["verdict"]["venue"] = {"name": sl.venue_name if sl.venue_name != DEFAULT_VENUE_NAME else vname,
                                    "key_id": sl.key_id, "session": sl.sid, "mode": sl.mode}
-        doc["session_match"] = {"session": sl.sid, "env_z": round(min(sl.env_z, 999.0), 2),
+        doc["session_match"] = {"session": sl.sid, "path": sl.path, "env_z": round(min(sl.env_z, 999.0), 2),
                                 "feed_offset_s": None if sl.feed_offset_s is None else round(sl.feed_offset_s, 2),
                                 "tried": tries,
                                 "candidates": [{"session": s.sid, "env_z": round(min(s.env_z, 999.0), 2)} for s in cands]}
@@ -1379,7 +1637,7 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     if "wt" in want and witness_root:
         l1r = (
             L["l1"].get("recorded_at_unix")
-            if (L["l1"].get("status") in ("present", "inconclusive") or L["l1"].get("content_match"))
+            if (L["l1"].get("status") == "present" or L["l1"].get("content_match"))
             else None
         )
         try:
@@ -1411,16 +1669,23 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     if l2_skip is None:
         l1 = L["l1"]
         if l1.get("recorded_at_unix") is not None and (
-            l1.get("status") in ("present", "inconclusive") or l1.get("content_match")
+            l1.get("status") == "present" or l1.get("content_match")
         ):
             c = l1["recorded_at_unix"]
-            l2_window = (int(c - 30), int(c + clip.duration_s * 1.6 + 30))
+            w0, w1 = int(c - 30), int(c + clip.duration_s * 1.6 + 30)
+            if sl is not None:
+                w0, w1 = max(sl.t_start, w0), min(sl.t_end, w1)
+                l2_window = (w0, w1) if w0 < w1 else (sl.t_start, sl.t_end)
+            else:
+                l2_window = (w0, w1)
         elif sl is not None:
             l2_window = (sl.t_start, sl.t_end)
             wt = L.get("wt") or {}
             if sl.feed_offset_s is not None and sl.env_z >= ENV_Z_MIN:
                 c = sl.t_start + sl.feed_offset_s
-                l2_window = (int(c - 60), int(c + clip.duration_s * 1.6 + 60))
+                w0, w1 = max(sl.t_start, int(c - 60)), min(sl.t_end, int(c + clip.duration_s * 1.6 + 60))
+                if w0 < w1:
+                    l2_window = (w0, w1)
             elif wt.get("content_match") and wt.get("recorded_at_unix") is not None:
                 c = wt["recorded_at_unix"]
                 w0, w1 = max(sl.t_start, int(c - 120)), min(sl.t_end, int(c + clip.duration_s * 1.6 + 120))
@@ -1430,18 +1695,18 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
                 w0, w1 = max(sl.t_start, int(t_around - 1800)), min(sl.t_end, int(t_around + 600))
                 if w0 < w1:
                     l2_window = (w0, w1)
-            if l2_window[1] - l2_window[0] > L2_MAX_WINDOW_S:
-                l2_window = (l2_window[1] - L2_MAX_WINDOW_S, l2_window[1])
         elif t_around is not None:
             l2_window = (int(t_around - 1800), int(t_around + 600))
         else:
             l2_skip = "no session or time window to search"
+        if l2_window is not None and l2_window[1] - l2_window[0] > L2_MAX_WINDOW_S:
+            l2_window = (l2_window[1] - L2_MAX_WINDOW_S, l2_window[1])
     explicit_l2 = layers != "auto" and "l2" in want
     l1_locked = L["l1"].get("status") == "present"
     run_l2_now = l2_skip is None and (explicit_l2 or (layers == "auto" and (not l1_locked or confirm)))
     if l2_skip is not None:
         L["l2"] = prevL.get("l2") if (prevL.get("l2") and not explicit_l2) else _stage("skipped", summary=l2_skip)
-    elif run_l2_now and fast and not explicit_l2:
+    elif run_l2_now and fast and not explicit_l2 and clip.duration_s >= L2_MIN_CLIP_S:
         L["l2"] = _stage("pending", "s3", "queued: run again with --layers l2 --merge")
     elif run_l2_now:
         try:
@@ -1455,13 +1720,9 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
         L["l2"] = _stage("skipped", "s3", "L1 already locked (pass --confirm to run L2 too)")
 
     if sl is not None:
-        for k in ("l1", "l2", "wt"):
-            st = L.get(k) or {}
-            ok = st.get("status") in ("present", "likely", "inconclusive") or (k != "l2" and st.get("content_match"))
-            if ok and st.get("recorded_at_unix") is not None:
-                rec = st["recorded_at_unix"]
-                doc["_wall_offset"] = sl.wall(rec) - rec
-                break
+        rec, _, _ = _pick_time_source(L)
+        if rec is not None:
+            doc["_wall_offset"] = sl.wall(rec) - rec
     fuse(doc)
     if sl is not None:
         doc["proof"] = _proof(sl, doc, clip)
@@ -1517,15 +1778,17 @@ def main(argv=None) -> None:
     bad = set(a.layers.split(",")) - {"l1", "l2", "wt"} if a.layers != "auto" else set()
     if bad:
         ap.error(f"unknown layers: {sorted(bad)}")
+    if a.around is not None:
+        try:
+            parse_time(a.around)
+        except ValueError as e:
+            ap.error(f"invalid --around time {a.around!r}: {e}")
     try:
         doc = run(a.clip, out_path=a.out, venue_dir=a.venue, key_file=a.key_file, session_log=a.session,
                   around=a.around, witness=a.witness, layers=a.layers, fast=a.fast, confirm=a.confirm,
                   merge=a.merge, l2_timeout_s=a.l2_timeout, venue_name=a.venue_name,
                   max_duration_s=a.max_duration, witness_root=a.witness_root, allow_network=a.allow_network,
                   argv=["wt-detect"] + argv)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"wt-detect: {e}", file=sys.stderr)
-        sys.exit(2)
     except Exception:
         tb = traceback.format_exc()
         doc = _empty_doc(["wt-detect"] + argv)

@@ -59,10 +59,20 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --env-file|-EnvFile)
+            if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" =~ ^- ]]; then
+                echo "ERROR: Missing value for $1" >&2
+                usage >&2
+                exit 1
+            fi
             ENV_FILE="$2"
             shift 2
             ;;
         --root|-Root)
+            if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" =~ ^- ]]; then
+                echo "ERROR: Missing value for $1" >&2
+                usage >&2
+                exit 1
+            fi
             ROOT_DIR="$2"
             shift 2
             ;;
@@ -117,11 +127,16 @@ ensure_runtime_env() {
         "$ROOT_DIR/data/witness" \
         "$ROOT_DIR/data/verdicts" \
         "$ROOT_DIR/data/simx" \
+        "$ROOT_DIR/data/uploads" \
         "$ROOT_DIR/logs" \
         "$ROOT_DIR/keys"
 
     local key_file="$ROOT_DIR/keys/venue.key"
-    if [[ ! -s "$key_file" ]]; then
+    local existing_key=""
+    if [[ -f "$key_file" ]]; then
+        existing_key="$(tr -d '[:space:]' < "$key_file" 2>/dev/null || true)"
+    fi
+    if [[ ! "$existing_key" =~ ^[0-9a-fA-F]{64}$ ]]; then
         local hex_key
         hex_key="$(generate_hex32 | tr -d '\r\n ')"
         printf '%s\n' "$hex_key" > "$key_file"
@@ -168,8 +183,8 @@ run_local_demo() {
 
     case "$action" in
         start|up)
-            local simx_cmd="$PY_BIN -m simx serve --host 127.0.0.1 --port 8791 --data $ROOT_DIR/data/simx"
-            local verdict_cmd="WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=$ROOT_DIR/data/witness WT_VERDICTS_DIR=$ROOT_DIR/data/verdicts WHOLETAKE_ASR=none $PY_BIN -m verdict serve --host 127.0.0.1 --port 8790"
+            local simx_cmd="$PY_BIN -m simx serve --host 127.0.0.1 --port 8791 --data \"$ROOT_DIR/data/simx\""
+            local verdict_cmd="WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=\"$ROOT_DIR/data/witness\" WT_VERDICTS_DIR=\"$ROOT_DIR/data/verdicts\" WT_UPLOADS_DIR=\"$ROOT_DIR/data/uploads\" ROOMSTAMP_LOG_DIR=\"$ROOT_DIR/logs\" ROOMSTAMP_KEY_FILE=\"$ROOT_DIR/keys/venue.key\" WHOLETAKE_ASR=none $PY_BIN -m verdict serve --host 127.0.0.1 --port 8790"
             if [[ "$DRY_RUN" -eq 1 ]]; then
                 echo "[dry-run] $simx_cmd"
                 echo "[dry-run] $verdict_cmd"
@@ -185,6 +200,9 @@ run_local_demo() {
                 WT_FETCH_ALLOW_HOSTS="127.0.0.1:8791" \
                 WT_WITNESS_ROOT="$ROOT_DIR/data/witness" \
                 WT_VERDICTS_DIR="$ROOT_DIR/data/verdicts" \
+                WT_UPLOADS_DIR="$ROOT_DIR/data/uploads" \
+                ROOMSTAMP_LOG_DIR="$ROOT_DIR/logs" \
+                ROOMSTAMP_KEY_FILE="$ROOT_DIR/keys/venue.key" \
                 WHOLETAKE_ASR="${WHOLETAKE_ASR:-none}" \
                 nohup "$PY_BIN" -m verdict serve --host 127.0.0.1 --port 8790 > "$ROOT_DIR/logs/verdict.log" 2>&1 &
                 echo $! > "$verdict_pid_file"
@@ -209,8 +227,8 @@ run_local_demo() {
             for pf in "$bot_pid_file" "$verdict_pid_file" "$simx_pid_file"; do
                 if [[ -f "$pf" ]]; then
                     local pid
-                    pid="$(cat "$pf" 2>/dev/null || true)"
-                    if [[ -n "$pid" ]]; then
+                    pid="$(tr -d '[:space:]' < "$pf" 2>/dev/null || true)"
+                    if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 0 ]]; then
                         kill "$pid" 2>/dev/null || true
                     fi
                     rm -f "$pf"
@@ -222,7 +240,14 @@ run_local_demo() {
             for name in simx verdict bot; do
                 local pf="$ROOT_DIR/logs/${name}.pid"
                 if [[ -f "$pf" ]]; then
-                    echo "local-demo $name pid=$(cat "$pf")"
+                    local pid
+                    pid="$(tr -d '[:space:]' < "$pf" 2>/dev/null || true)"
+                    if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 0 ]] && kill -0 "$pid" 2>/dev/null; then
+                        echo "local-demo $name pid=$pid"
+                    else
+                        rm -f "$pf"
+                        echo "local-demo $name stopped"
+                    fi
                 else
                     echo "local-demo $name stopped"
                 fi

@@ -56,7 +56,8 @@ def transcribe(x: np.ndarray, language: str | None = "en") -> list[Word]:
     m = model()
     if m is None:  # acoustic-only mode (records up to 20 min are searched without text)
         return []
-    segs, _ = m.transcribe(np.asarray(x, dtype=np.float32), language=language, word_timestamps=True,
+    arr = np.nan_to_num(np.asarray(x, dtype=np.float32), copy=True, nan=0.0, posinf=0.0, neginf=0.0)
+    segs, _ = m.transcribe(arr, language=language, word_timestamps=True,
                            vad_filter=True, condition_on_previous_text=False, beam_size=5, temperature=0.0)
     out: list[Word] = []
     for s in segs:

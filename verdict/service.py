@@ -44,23 +44,55 @@ def witness_heads_snapshot(witness_root: Path) -> dict[str, str]:
     for sdir in sorted(witness_root.iterdir()):
         if not sdir.is_dir():
             continue
+        head_hash: str | None = None
+        head_seq: int = -1
         hp = sdir / "head.json"
         if hp.exists():
             try:
-                obj = json.loads(hp.read_text())
-                if isinstance(obj.get("hash"), str):
-                    heads[sdir.name] = obj["hash"]
-                    continue
+                obj = json.loads(hp.read_text(encoding="utf-8"))
+                if isinstance(obj, dict) and isinstance(obj.get("hash"), str) and obj["hash"].strip():
+                    head_hash = obj["hash"].strip()
+                    seq_val = obj.get("seq")
+                    if isinstance(seq_val, int) and not isinstance(seq_val, bool):
+                        head_seq = seq_val
             except Exception:
                 pass
+
+        chain_hash: str | None = None
+        chain_seq: int = -1
         cp = sdir / "chain.jsonl"
         if cp.exists():
             try:
-                lines = [ln for ln in cp.read_bytes().splitlines() if ln.strip()]
-                if lines:
-                    heads[sdir.name] = json.loads(lines[-1].decode("utf-8"))["hash"]
+                raw_lines = cp.read_bytes().splitlines()
             except Exception:
-                pass
+                raw_lines = []
+            for raw_line in reversed(raw_lines):
+                if not raw_line.strip():
+                    continue
+                try:
+                    entry = json.loads(raw_line.decode("utf-8"))
+                except Exception:
+                    continue
+                if isinstance(entry, dict) and isinstance(entry.get("hash"), str) and entry["hash"].strip():
+                    chain_hash = entry["hash"].strip()
+                    seq_val = entry.get("seq")
+                    if isinstance(seq_val, int) and not isinstance(seq_val, bool):
+                        chain_seq = seq_val
+                    break
+
+        chosen: str | None = None
+        if chain_hash is not None and head_hash is not None:
+            if chain_seq >= 0 and head_seq >= 0:
+                chosen = chain_hash if chain_seq >= head_seq else head_hash
+            else:
+                chosen = chain_hash
+        elif chain_hash is not None:
+            chosen = chain_hash
+        elif head_hash is not None:
+            chosen = head_hash
+
+        if chosen is not None:
+            heads[sdir.name] = chosen
     return heads
 
 
@@ -93,19 +125,70 @@ def run_pipeline(
     return compose_verdict(clip_info, detection, label, proofs, wroot)
 
 
-def detector_identity() -> str:
-    """Which detector a cached result came from: the $WT_DETECT command plus the repo commit.
+_GIT_REV: str | None = None
 
-    The cache keys on the clip and the witness heads; without this, upgrading the detector (text-only ->
-    S4 + Roomstamp) would keep serving the old verdicts for every clip seen before."""
-    cmd = os.environ.get("WT_DETECT") or "verdict.wt_adapter"
+
+def _git_head_rev() -> str:
+    global _GIT_REV
+    if _GIT_REV is None:
+        try:
+            import subprocess
+            _GIT_REV = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        except Exception:
+            _GIT_REV = ""
+    return _GIT_REV
+
+
+def _roomstamp_state_fingerprint() -> str:
+    """Hash ROOMSTAMP_KEY_FILE content and ROOMSTAMP_LOG_DIR session log state for cache invalidation."""
+    h = hashlib.sha256()
+    key_file = Path(os.environ.get("ROOMSTAMP_KEY_FILE") or (REPO_ROOT / "keys" / "venue.key"))
     try:
-        import subprocess
-        rev = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1],
-                             capture_output=True, text=True, timeout=5).stdout.strip()
+        if key_file.is_file():
+            h.update(b"key_present:")
+            h.update(hashlib.sha256(key_file.read_bytes()).digest())
+        else:
+            h.update(b"key_missing")
     except Exception:
-        rev = ""
-    return f"{cmd}@{rev or 'unknown'}"
+        h.update(b"key_error")
+
+    log_dir = Path(os.environ.get("ROOMSTAMP_LOG_DIR") or (REPO_ROOT / "logs"))
+    try:
+        if log_dir.is_dir():
+            h.update(b"|logs:")
+            for entry in sorted(log_dir.iterdir(), key=lambda p: p.name):
+                if not entry.is_file():
+                    continue
+                name = entry.name
+                if not (name.endswith(".jsonl") or name.endswith(".wav")):
+                    continue
+                st = entry.stat()
+                h.update(f"{name}:{st.st_size}:{st.st_mtime_ns}|".encode("utf-8"))
+                if name.endswith(".jsonl") and st.st_size <= 10 * 1024 * 1024:
+                    h.update(hashlib.sha256(entry.read_bytes()).digest())
+        else:
+            h.update(b"|logs_missing")
+    except Exception:
+        h.update(b"|logs_error")
+    return h.hexdigest()
+
+
+def detector_identity() -> str:
+    """Which detector and Roomstamp key/log state a cached result came from.
+
+    The cache keys on the clip and the witness heads; including the detector command, git commit,
+    ROOMSTAMP_KEY_FILE digest, and ROOMSTAMP_LOG_DIR session state ensures upgrading the detector,
+    rotating venue keys, or emitting new Roomstamp sessions invalidates stale verdicts."""
+    cmd = os.environ.get("WT_DETECT") or "verdict.wt_adapter"
+    rev = _git_head_rev()
+    rs_fp = _roomstamp_state_fingerprint()[:16]
+    return f"{cmd}@{rev or 'unknown'}:rs={rs_fp}"
 
 
 class VerdictManager:
@@ -177,14 +260,17 @@ class VerdictManager:
         for _created, jid in resumable:
             self._queue.put(jid)
 
-    def _find_cached_result(self, clip_sha256: str, heads: dict[str, str]) -> dict | None:
+    def _find_cached_result(
+        self, clip_sha256: str, heads: dict[str, str], detector_id: str | None = None
+    ) -> dict | None:
+        det_id = detector_id if detector_id is not None else detector_identity()
         with self._lock:
             for job in self._jobs.values():
                 if (
                     job.get("status") == "done"
                     and job.get("clip_sha256") == clip_sha256
                     and job.get("witness_heads") == heads
-                    and job.get("detector_id") == self.detector_id
+                    and job.get("detector_id") == det_id
                     and isinstance(job.get("result"), dict)
                 ):
                     return job["result"]
@@ -329,13 +415,17 @@ class VerdictManager:
         job = self.get_job(job_id)
         if not job:
             return
-        url = job["url"]
         try:
+            url = job["url"]
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("missing or empty 'url'")
             self._set_status(job_id, "fetching")
             clip_info = self.fetch_fn(url)
             heads = witness_heads_snapshot(self.witness_root)
+            det_id = detector_identity()
+            self.detector_id = det_id
 
-            cached = self._find_cached_result(clip_info["sha256"], heads)
+            cached = self._find_cached_result(clip_info["sha256"], heads, det_id)
             if cached is not None:
                 self._set_status(
                     job_id,
@@ -343,7 +433,7 @@ class VerdictManager:
                     clip_sha256=clip_info["sha256"],
                     clip_wav=str(clip_info.get("wav") or ""),
                     witness_heads=heads,
-                    detector_id=self.detector_id,
+                    detector_id=det_id,
                     result=cached,
                     error=None,
                 )
@@ -355,6 +445,7 @@ class VerdictManager:
                 clip_sha256=clip_info["sha256"],
                 clip_wav=str(clip_info.get("wav") or ""),
                 witness_heads=heads,
+                detector_id=det_id,
             )
             detection = self.detect_fn(clip_info["wav"], self.witness_root)
             proofs = build_proofs(detection, self.witness_root)
@@ -372,7 +463,7 @@ class VerdictManager:
                 clip_sha256=clip_info["sha256"],
                 clip_wav=str(clip_info.get("wav") or ""),
                 witness_heads=heads,
-                detector_id=self.detector_id,
+                detector_id=det_id,
                 result=verdict,
                 error=None,
             )
@@ -387,6 +478,11 @@ class VerdictManager:
                 break
             try:
                 self.process_one(jid)
+            except Exception as e:
+                try:
+                    self._set_status(jid, "error", error=str(e))
+                except Exception:
+                    pass
             finally:
                 self._queue.task_done()
 

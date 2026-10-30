@@ -65,8 +65,9 @@ while ($i -lt $args.Count) {
         }
         '^(--env-file|-EnvFile)$' {
             $i++
-            if ($i -ge $args.Count) {
-                Write-Error "Missing value for $arg"
+            if ($i -ge $args.Count -or [string]::IsNullOrWhiteSpace([string]$args[$i]) -or ([string]$args[$i]).StartsWith("-")) {
+                [Console]::Error.WriteLine("ERROR: Missing value for $arg")
+                Show-Usage
                 exit 1
             }
             $EnvFile = [string]$args[$i]
@@ -75,8 +76,9 @@ while ($i -lt $args.Count) {
         }
         '^(--root|-Root)$' {
             $i++
-            if ($i -ge $args.Count) {
-                Write-Error "Missing value for $arg"
+            if ($i -ge $args.Count -or [string]::IsNullOrWhiteSpace([string]$args[$i]) -or ([string]$args[$i]).StartsWith("-")) {
+                [Console]::Error.WriteLine("ERROR: Missing value for $arg")
+                Show-Usage
                 exit 1
             }
             $RootDir = [string]$args[$i]
@@ -88,7 +90,7 @@ while ($i -lt $args.Count) {
             exit 0
         }
         default {
-            Write-Error "Unknown argument: $arg"
+            [Console]::Error.WriteLine("ERROR: Unknown argument: $arg")
             Show-Usage
             exit 1
         }
@@ -112,6 +114,7 @@ function Initialize-RuntimeEnv {
         (Join-Path $RootDir "data/witness"),
         (Join-Path $RootDir "data/verdicts"),
         (Join-Path $RootDir "data/simx"),
+        (Join-Path $RootDir "data/uploads"),
         (Join-Path $RootDir "logs"),
         (Join-Path $RootDir "keys")
     )
@@ -123,9 +126,9 @@ function Initialize-RuntimeEnv {
 
     $keyFile = Join-Path $RootDir "keys/venue.key"
     $needKey = $true
-    if (Test-Path -LiteralPath $keyFile) {
+    if (Test-Path -LiteralPath $keyFile -PathType Leaf) {
         $existing = (Get-Content -LiteralPath $keyFile -Raw -ErrorAction SilentlyContinue)
-        if ($existing -and $existing.Trim().Length -ge 64) {
+        if ($null -ne $existing -and [System.Text.RegularExpressions.Regex]::IsMatch($existing.Trim(), '\A[0-9a-fA-F]{64}\z')) {
             $needKey = $false
         }
     }
@@ -180,26 +183,33 @@ function Invoke-LocalDemo {
     $simxData = Join-Path $RootDir "data/simx"
     $witnessRoot = Join-Path $RootDir "data/witness"
     $verdictsDir = Join-Path $RootDir "data/verdicts"
+    $uploadsDir = Join-Path $RootDir "data/uploads"
+    $logsDir = Join-Path $RootDir "logs"
+    $keyFile = Join-Path $RootDir "keys/venue.key"
 
     switch -Regex ($Action) {
         '^(start|up)$' {
-            $simxCmd = "python -m simx serve --host 127.0.0.1 --port 8791 --data $simxData"
+            $simxCmd = "python -m simx serve --host 127.0.0.1 --port 8791 --data `"$simxData`""
             $verdictCmd = "python -m verdict serve --host 127.0.0.1 --port 8790"
             if ($DryRun) {
                 Write-Output "[dry-run] $simxCmd"
-                Write-Output "[dry-run] WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=$witnessRoot WT_VERDICTS_DIR=$verdictsDir WHOLETAKE_ASR=none $verdictCmd"
+                Write-Output "[dry-run] WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=`"$witnessRoot`" WT_VERDICTS_DIR=`"$verdictsDir`" WT_UPLOADS_DIR=`"$uploadsDir`" ROOMSTAMP_LOG_DIR=`"$logsDir`" ROOMSTAMP_KEY_FILE=`"$keyFile`" WHOLETAKE_ASR=none $verdictCmd"
                 if ($WithDaemons) {
                     Write-Output "[dry-run] X_API_BASE=http://127.0.0.1:8791 X_BOT_TOKEN=sim-wholetake WT_VERDICT_URL=http://127.0.0.1:8790 WT_PAGE_BASE=http://127.0.0.1:8790 python -m bot run"
                 }
                 return
             }
 
-            $pSimx = Start-Process -FilePath "python" -ArgumentList @("-m", "simx", "serve", "--host", "127.0.0.1", "--port", "8791", "--data", $simxData) -WorkingDirectory $DefaultRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RootDir "logs/simx.log") -RedirectStandardError (Join-Path $RootDir "logs/simx.err.log")
+            $quotedSimxData = "`"$simxData`""
+            $pSimx = Start-Process -FilePath "python" -ArgumentList @("-m", "simx", "serve", "--host", "127.0.0.1", "--port", "8791", "--data", $quotedSimxData) -WorkingDirectory $DefaultRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RootDir "logs/simx.log") -RedirectStandardError (Join-Path $RootDir "logs/simx.err.log")
             [System.IO.File]::WriteAllText($simxPidFile, "$($pSimx.Id)")
 
             $env:WT_FETCH_ALLOW_HOSTS = "127.0.0.1:8791"
             $env:WT_WITNESS_ROOT = $witnessRoot
             $env:WT_VERDICTS_DIR = $verdictsDir
+            $env:WT_UPLOADS_DIR = $uploadsDir
+            $env:ROOMSTAMP_LOG_DIR = $logsDir
+            $env:ROOMSTAMP_KEY_FILE = $keyFile
             if (-not $env:WHOLETAKE_ASR) { $env:WHOLETAKE_ASR = "none" }
 
             $pVerdict = Start-Process -FilePath "python" -ArgumentList @("-m", "verdict", "serve", "--host", "127.0.0.1", "--port", "8790") -WorkingDirectory $DefaultRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RootDir "logs/verdict.log") -RedirectStandardError (Join-Path $RootDir "logs/verdict.err.log")
@@ -227,9 +237,11 @@ function Invoke-LocalDemo {
             }
             foreach ($pf in @($botPidFile, $verdictPidFile, $simxPidFile)) {
                 if (Test-Path -LiteralPath $pf) {
-                    $rawPid = (Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue).Trim()
-                    if ($rawPid) {
-                        Stop-Process -Id ([int]$rawPid) -Force -ErrorAction SilentlyContinue
+                    $content = Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue
+                    $rawPid = if ($null -ne $content) { $content.Trim() } else { "" }
+                    $parsedPid = 0
+                    if ([int]::TryParse($rawPid, [ref]$parsedPid) -and $parsedPid -gt 0) {
+                        Stop-Process -Id $parsedPid -Force -ErrorAction SilentlyContinue
                     }
                     Remove-Item -LiteralPath $pf -Force -ErrorAction SilentlyContinue
                 }
@@ -240,9 +252,23 @@ function Invoke-LocalDemo {
         '^status$' {
             foreach ($name in @("simx", "verdict", "bot")) {
                 $pf = Join-Path $RootDir "logs/$name.pid"
+                $running = $false
+                $parsedPid = 0
                 if (Test-Path -LiteralPath $pf) {
-                    $rawPid = (Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue).Trim()
-                    Write-Output "local-demo $name pid=$rawPid"
+                    $content = Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue
+                    $rawPid = if ($null -ne $content) { $content.Trim() } else { "" }
+                    if ([int]::TryParse($rawPid, [ref]$parsedPid) -and $parsedPid -gt 0) {
+                        $proc = Get-Process -Id $parsedPid -ErrorAction SilentlyContinue
+                        if ($null -ne $proc) {
+                            $running = $true
+                        }
+                    }
+                    if (-not $running) {
+                        Remove-Item -LiteralPath $pf -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                if ($running) {
+                    Write-Output "local-demo $name pid=$parsedPid"
                 } else {
                     Write-Output "local-demo $name stopped"
                 }

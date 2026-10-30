@@ -38,7 +38,7 @@ def wt_stage(clip_x48k: np.ndarray, witness_path: str) -> dict:
     try:
         from wholetake import match
         rec = _record(witness_path)
-        arr = np.asarray(clip_x48k, dtype=np.float64).ravel()
+        arr = np.nan_to_num(np.asarray(clip_x48k, dtype=np.float64).ravel(), copy=True, nan=0.0, posinf=0.0, neginf=0.0)
         x = resample_poly(arr, 1, 3).astype(np.float32) if len(arr) else np.zeros((0,), dtype=np.float32)
         r = match.match(rec, x)
     except Exception as e:  # the stage must never take down the pipeline

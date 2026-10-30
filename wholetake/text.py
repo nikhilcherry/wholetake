@@ -35,13 +35,16 @@ _DEV_CONS = dict(zip("कखगघङचछजझञटठडढणतथदध�
                       "d", "dh", "n", "p", "ph", "b", "bh", "m", "y", "r", "l", "v", "sh", "sh", "s", "h"]))
 _DEV_VOW = dict(zip("अआइईउऊएऐओऔऋ", ["a", "aa", "i", "ee", "u", "oo", "e", "ai", "o", "au", "ri"]))
 _DEV_MAT = dict(zip("ािीुूेैोौृ", ["aa", "i", "ee", "u", "oo", "e", "ai", "o", "au", "ri"]))
+_DEV_DIG = dict(zip("०१२३४५६७८९", "0123456789"))
 _DEV_NASAL = set("ंँ")
 _VIRAMA = "्"
+_NUKTA = "़"
 
 
 def romanise(word: str) -> str:
     if not any("ऀ" <= ch <= "ॿ" for ch in word):
         return word
+    word = unicodedata.normalize("NFC", word).replace(_NUKTA, "")
     out, i = [], 0
     while i < len(word):
         ch = word[i]
@@ -57,6 +60,10 @@ def romanise(word: str) -> str:
                 out.append("a")  # inherent schwa, dropped at word end
         elif ch in _DEV_VOW:
             out.append(_DEV_VOW[ch])
+        elif ch in _DEV_MAT:
+            out.append(_DEV_MAT[ch])
+        elif ch in _DEV_DIG:
+            out.append(_DEV_DIG[ch])
         elif ch in _DEV_NASAL:
             out.append("n")
         elif ch.isascii():

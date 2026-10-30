@@ -25,7 +25,15 @@ from .spec import FS
 
 
 def load_key(path: str) -> bytes:
-    raw = os.environ.get("ROOMSTAMP_KEY") or open(path, encoding="utf-8").read().strip()
+    raw = os.environ.get("ROOMSTAMP_KEY")
+    if not raw:
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = f.read().strip()
+        except OSError as e:
+            raise SystemExit(f"cannot read key file {path}: {e}") from None
+    else:
+        raw = raw.strip()
     try:
         key = bytes.fromhex(raw)
     except ValueError:
@@ -54,8 +62,14 @@ def cmd_render(a) -> None:
     from .drand import fetch_round
     key = load_key(a.key_file)
     x = wavio.read(a.wav_in)
+    if len(x) == 0:
+        raise SystemExit("input WAV is empty")
     p = params_from(a)
     t0 = a.t_start if a.t_start is not None else int(time.time()) - (len(x) // FS + 10)   # recent past: all rounds published
+    n_sec = -(-len(x) // FS)
+    if isinstance(t0, bool) or not isinstance(t0, (int, np.integer)) or int(t0) < 1 or int(t0) >= (1 << 64) or int(t0) + n_sec > (1 << 64):
+        raise ValueError(f"t_start..t_start+n_sec must be in [1, 2^64], got t_start={t0!r}, n_sec={n_sec}")
+    t0 = int(t0)
     cache: dict[int, bytes | None] = {}
 
     def lookup(t):
@@ -92,8 +106,11 @@ def read_log(path: str) -> tuple[dict, dict[int, dict]]:
     Randomness is per SECOND: the emitter may have used a round for one second and not for
     the next one sharing it; the verifier must reproduce exactly that."""
     header, secs = None, {}
-    with open(path, encoding="utf-8") as f:
-        lines = [line for line in f if line.strip()]
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [line for line in f if line.strip()]
+    except OSError as e:
+        raise SystemExit(f"cannot read log file {path}: {e}") from None
     for i, line in enumerate(lines):
         try:
             r = json.loads(line)
@@ -101,7 +118,8 @@ def read_log(path: str) -> tuple[dict, dict[int, dict]]:
             if i == len(lines) - 1:
                 print(f"warning: ignoring truncated final line in {path}", file=sys.stderr)
                 break
-            raise
+            print(f"warning: ignoring corrupt line {i + 1} in {path}", file=sys.stderr)
+            continue
         if not isinstance(r, dict):
             continue
         rtype = r.get("type")
@@ -165,12 +183,30 @@ def check_drand(secs: dict[int, dict], ts) -> str:
 
 def cmd_detect(a) -> None:
     header, secs = read_log(a.log)
+    if not isinstance(header, dict):
+        raise SystemExit("log missing session header")
+    for req in ("key_id", "feed_wav", "params", "t_start"):
+        if req not in header:
+            raise SystemExit(f"session header missing required field: {req}")
+    if not isinstance(header["key_id"], str) or not header["key_id"].strip():
+        raise SystemExit("invalid key_id in session header")
+    if not isinstance(header["feed_wav"], str) or not header["feed_wav"].strip():
+        raise SystemExit("invalid feed_wav in session header")
+    raw_params = header["params"]
+    if not isinstance(raw_params, dict):
+        raise SystemExit("invalid params in session header: must be a dict")
+    try:
+        p = StampParams(**raw_params)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"invalid params in session header: {exc}") from None
+    t0 = header["t_start"]
+    if isinstance(t0, bool) or not isinstance(t0, int) or t0 < 1 or t0 >= (1 << 63):
+        raise SystemExit(f"invalid t_start in session header: {t0!r}")
     key = load_key(a.key_file)
     if spec.key_id(key) != header["key_id"]:
         print(f"note: key_id {spec.key_id(key)} != session key_id {header['key_id']} (expect 'absent')")
     feed = wavio.read(a.feed or os.path.join(os.path.dirname(a.log), header["feed_wav"]))
-    p = StampParams(**header["params"])
-    t0, ref_rms, gain = header["t_start"], None, None
+    ref_rms, gain = None, None
     if a.dur is None or not np.isfinite(a.dur) or a.dur < 1:
         raise SystemExit(f"--dur must be >= 1 second (got {a.dur})")
     if a.start is not None:   # a section of a long session: feed seconds [start, start+dur)

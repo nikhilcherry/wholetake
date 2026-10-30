@@ -245,7 +245,21 @@ async function _origSubmitClip(baseUrl, clipUrl, options) {
     };
   }
 
-  async function getVerdict(serviceUrl, jobId, options = {}) {
+  async function getVerdict(serviceUrl, jobId, options) {
+  return _getVerdictInner(serviceUrl, jobId, options).then((res) => {
+    if (res && res.ok && (!res.job || typeof res.job !== 'object' || Array.isArray(res.job))) {
+      return {
+        ok: false,
+        offline: false,
+        status: typeof res.status === 'number' ? res.status : 200,
+        error: 'Invalid verdict response payload',
+      };
+    }
+    return res;
+  });
+}
+
+async function _getVerdictInner(serviceUrl, jobId, options = {}) {
   const opts = options && typeof options === 'object' ? options : {};
   const reqTimeoutMs = Number(opts.requestTimeoutMs || opts.timeoutMs) > 0
     ? Number(opts.requestTimeoutMs || opts.timeoutMs)
@@ -349,7 +363,61 @@ async function _origGetVerdict(baseUrl, jobId, options) {
     });
   }
 
-  async function pollVerdict(serviceUrl, jobId, options = {}) {
+  async function pollVerdict(serviceUrl, jobId, options) {
+    const rawOpts = options && typeof options === "object" ? options : {};
+    const rawInterval =
+      rawOpts.intervalMs !== undefined && rawOpts.intervalMs !== null && rawOpts.intervalMs !== ""
+        ? Number(rawOpts.intervalMs)
+        : NaN;
+    const rawTimeout =
+      rawOpts.timeoutMs !== undefined && rawOpts.timeoutMs !== null && rawOpts.timeoutMs !== ""
+        ? Number(rawOpts.timeoutMs)
+        : NaN;
+    const safeIntervalMs = Number.isFinite(rawInterval) ? Math.max(10, rawInterval) : 500;
+    const safeTimeoutMs = Number.isFinite(rawTimeout) ? Math.max(0, rawTimeout) : 60000;
+    if (safeTimeoutMs <= 0) {
+      return Promise.resolve(
+        getVerdict(serviceUrl, jobId, Object.assign({}, rawOpts, { timeoutMs: 200 }))
+      ).then(function (res) {
+        if (res && res.job && typeof rawOpts.onProgress === "function") {
+          try {
+            rawOpts.onProgress(res.job);
+          } catch (_e) {}
+        }
+        if (!res || !res.ok) {
+          return res || { ok: false, status: 0, error: "pollVerdict failed" };
+        }
+        const st = res.job && res.job.status;
+        if (st === "done") {
+          return { ok: true, status: res.status || 200, job: res.job };
+        }
+        if (st === "error") {
+          return {
+            ok: false,
+            status: res.status || 200,
+            job: res.job,
+            error: (res.job && res.job.error) || "verdict job failed",
+          };
+        }
+        return {
+          ok: false,
+          status: 408,
+          job: res.job || null,
+          error: "Polling timed out waiting for verdict",
+          timedOut: true,
+        };
+      });
+    }
+    return _origPollVerdict(
+      serviceUrl,
+      jobId,
+      Object.assign({}, rawOpts, {
+        intervalMs: safeIntervalMs,
+        timeoutMs: safeTimeoutMs,
+      })
+    );
+  }
+  async function _origPollVerdict(serviceUrl, jobId, options = {}) {
   const opts = options && typeof options === 'object' ? options : {};
   const intervalMs = Number(opts.intervalMs) > 0 ? Number(opts.intervalMs) : 1000;
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 60000;
@@ -447,7 +515,39 @@ async function _origPollVerdict(baseUrl, jobId, options) {
     }
   }
 
-  function formatVerdictSummary(jobOrResult, baseUrl) {
+  function formatVerdictSummary(jobOrResult, serviceUrl) {
+    const summary = _rawFormatVerdictSummary.apply(this, arguments);
+    if (summary && typeof summary === 'object') {
+      const job = jobOrResult && typeof jobOrResult === 'object' ? jobOrResult : {};
+      const result = job.result && typeof job.result === 'object' ? job.result : job;
+      const detection = result.detection && typeof result.detection === 'object' ? result.detection : result;
+      const rawStamp = detection.stamp && typeof detection.stamp === 'object' ? detection.stamp : null;
+      const stampCuts = (summary.stamp && Array.isArray(summary.stamp.cuts) && summary.stamp.cuts.length > 0)
+        ? summary.stamp.cuts
+        : (rawStamp && Array.isArray(rawStamp.cuts) ? rawStamp.cuts : []);
+      if ((!Array.isArray(summary.cuts) || summary.cuts.length === 0) && stampCuts.length > 0) {
+        summary.cuts = stampCuts.map((sc) => {
+          const atS = sc && (sc.at_clip_s != null ? sc.at_clip_s : sc.atClipS);
+          const remS = sc && (sc.removed_s != null ? sc.removed_s : sc.removedS);
+          return {
+            afterClipS: typeof atS === 'number' ? atS : null,
+            removedS: typeof remS === 'number' ? remS : null,
+            seq: null,
+            srcS: null,
+            words: '',
+          };
+        });
+      }
+      const cutsLen = Array.isArray(summary.cuts) ? summary.cuts.length : 0;
+      const v = String(summary.verdict || 'unknown').toLowerCase();
+      if ((cutsLen > 0 || stampCuts.length > 0) && (v === 'faithful' || v === 'intact' || v === 'not_found' || v === 'unknown')) {
+        summary.verdict = 'cut';
+      }
+    }
+    return summary;
+  }
+
+  function _rawFormatVerdictSummary(jobOrResult, baseUrl) {
     var base = normalizeServiceUrl(baseUrl);
     var job = (jobOrResult && typeof jobOrResult === "object") ? jobOrResult : {};
     var result = (job.result && typeof job.result === "object") ? job.result : job;

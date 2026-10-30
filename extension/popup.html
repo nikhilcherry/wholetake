@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wholetake Clip Verifier</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="wt-container">
+    <header class="wt-header">
+      <div class="wt-brand">
+        <img src="icons/icon.svg" alt="Wholetake" class="wt-logo" width="24" height="24">
+        <div>
+          <h1 class="wt-title">Wholetake Verifier</h1>
+          <p class="wt-subtitle">Witness Archive &amp; Roomstamp Acoustic Check</p>
+        </div>
+      </div>
+    </header>
+
+    <section class="wt-field-group">
+      <label for="service-url-input" class="wt-label">Verdict Service URL</label>
+      <div class="wt-input-row">
+        <input
+          id="service-url-input"
+          type="url"
+          class="wt-input"
+          value="http://127.0.0.1:8790"
+          placeholder="http://127.0.0.1:8790"
+          spellcheck="false"
+        >
+        <button id="save-service-url-btn" type="button" class="wt-btn wt-btn-secondary" title="Save Service URL">
+          Save
+        </button>
+      </div>
+      <span id="service-url-saved" class="wt-hint" hidden>Saved</span>
+    </section>
+
+    <section class="wt-field-group">
+      <div class="wt-label-row">
+        <label for="clip-url-input" class="wt-label">Clip or Post URL</label>
+        <button id="detect-clip-btn" type="button" class="wt-link-btn" title="Detect media from active tab">
+          Detect from tab
+        </button>
+      </div>
+      <input
+        id="clip-url-input"
+        type="url"
+        class="wt-input"
+        placeholder="https://x.com/... or video/audio URL"
+        spellcheck="false"
+      >
+      <span id="clip-source-hint" class="wt-hint"></span>
+    </section>
+
+    <button id="check-clip-btn" type="button" class="wt-btn wt-btn-primary">
+      Check this clip with Wholetake
+    </button>
+
+    <section id="status-section" class="wt-status-section" hidden>
+      <div class="wt-status-header">
+        <span id="status-text" class="wt-status-text">Submitting clip...</span>
+        <span id="status-job-id" class="wt-job-id"></span>
+      </div>
+      <div id="status-steps" class="wt-steps" role="status" aria-live="polite">
+        <span class="wt-step" data-step="queued">queued</span>
+        <span class="wt-step" data-step="fetching">fetching</span>
+        <span class="wt-step" data-step="detecting">detecting</span>
+        <span class="wt-step" data-step="labeling">labeling</span>
+        <span class="wt-step" data-step="done">done</span>
+      </div>
+    </section>
+
+    <section id="error-banner" class="wt-error-banner" role="alert" hidden>
+      <div id="error-title" class="wt-error-title">Verdict Service Error</div>
+      <div id="error-message" class="wt-error-message"></div>
+    </section>
+
+    <section id="verdict-card" class="wt-verdict-card" hidden>
+      <div class="wt-verdict-header">
+        <div>
+          <span class="wt-section-kicker">Witness Verdict</span>
+          <div class="wt-verdict-badge-row">
+            <span id="verdict-badge" class="wt-badge wt-badge-unknown">UNKNOWN</span>
+            <span id="verdict-stream" class="wt-stream-tag"></span>
+          </div>
+        </div>
+      </div>
+
+      <div id="cuts-section" class="wt-card-block">
+        <h2 class="wt-block-title">What Was Cut</h2>
+        <p id="cuts-summary" class="wt-cuts-summary"></p>
+        <ul id="cuts-list" class="wt-cuts-list"></ul>
+      </div>
+
+      <div id="stamp-section" class="wt-card-block">
+        <div class="wt-stamp-header">
+          <h2 class="wt-block-title">Roomstamp Watermark</h2>
+          <span id="stamp-badge" class="wt-stamp-badge">Not Detected</span>
+        </div>
+        <div id="stamp-details" class="wt-stamp-details">
+          <div class="wt-meta-row">
+            <span class="wt-meta-label">Venue:</span>
+            <span id="stamp-venue" class="wt-meta-value">—</span>
+          </div>
+          <div class="wt-meta-row">
+            <span class="wt-meta-label">Recorded UTC:</span>
+            <span id="stamp-time" class="wt-meta-value">—</span>
+          </div>
+          <div class="wt-meta-row">
+            <span class="wt-meta-label">Scores:</span>
+            <span id="stamp-scores" class="wt-meta-value">—</span>
+          </div>
+          <ul id="stamp-cuts-list" class="wt-stamp-cuts-list"></ul>
+        </div>
+      </div>
+
+      <div class="wt-proof-footer">
+        <a
+          id="proof-link"
+          class="wt-proof-link"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Open Full Proof &amp; Restored Audio Page &rarr;
+        </a>
+      </div>
+    </section>
+  </div>
+
+  <script src="api.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -518,6 +518,465 @@ const api = require({json.dumps(str(api_path))});
         shutil.rmtree(tmp_service_dir, ignore_errors=True)
 
 
+def _start_staged_mock_verdict_server():
+    """Mock server that steps through queued -> fetching -> detecting -> labeling -> done."""
+    jobs = {}
+    poll_counts = {}
+    stage_sequence = ["queued", "fetching", "detecting", "labeling", "done"]
+
+    class StagedHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def _send(self, code: int, obj: dict, cors: bool = False):
+            raw = (json.dumps(obj) + "\n").encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            if cors:
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_POST(self):
+            if self.path.rstrip("/") != "/api/verdict":
+                self._send(404, {"error": "not found"}, cors=False)
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
+            url = body.get("url", "")
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                self._send(400, {"error": "invalid url"}, cors=False)
+                return
+            job_id = "stagedjob0000001"
+            jobs[job_id] = {
+                "id": job_id,
+                "url": url,
+                "status": "queued",
+                "result": None,
+                "error": None,
+            }
+            poll_counts[job_id] = 0
+            self._send(202, {"id": job_id, "status": "queued"}, cors=False)
+
+        def do_GET(self):
+            if self.path.startswith("/api/verdict/"):
+                job_id = self.path.split("/api/verdict/", 1)[1]
+                job = jobs.get(job_id)
+                if not job:
+                    self._send(404, {"error": "verdict job not found"}, cors=True)
+                    return
+                idx = min(poll_counts.get(job_id, 0), len(stage_sequence) - 1)
+                poll_counts[job_id] = poll_counts.get(job_id, 0) + 1
+                st = stage_sequence[idx]
+                job["status"] = st
+                if st == "done":
+                    job["result"] = {
+                        "verdict_id": job_id,
+                        "page_url": f"/v/{job_id}",
+                        "detection": {
+                            "stamp": {
+                                "present": True,
+                                "venue": "main-hall",
+                                "recorded_at_utc": "2026-10-31T06:12:07Z",
+                                "layer1_score": 0.96,
+                                "layer2_score": 0.88,
+                                "cuts": [{"at_clip_s": 12.3, "removed_s": 0.6}],
+                            },
+                            "witness": {
+                                "verdict": "cut",
+                                "stream": "aje",
+                                "removed": [
+                                    {
+                                        "after_clip_s": 12.3,
+                                        "seq": 41,
+                                        "src_s": [45.4, 46.0],
+                                        "words": "not",
+                                    }
+                                ],
+                            },
+                        },
+                    }
+                self._send(200, job, cors=True)
+                return
+            self._send(404, {"error": "not found"}, cors=True)
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), StagedHandler)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    return httpd
+
+
+NODE_WIRING_TEST_SCRIPT = r"""
+const assert = require('assert');
+const path = require('path');
+
+const extDir = process.argv[2];
+const baseUrl = process.argv[3];
+
+const api = require(path.join(extDir, 'api.js'));
+global.WholetakeApi = api;
+const bg = require(path.join(extDir, 'background.js'));
+const popup = require(path.join(extDir, 'popup.js'));
+
+function createMockExt(initialStore) {
+  const store = Object.assign({}, initialStore || {});
+  const createdMenus = [];
+  const listeners = { onInstalled: [], onClicked: [], onMessage: [] };
+  return {
+    store,
+    createdMenus,
+    listeners,
+    runtime: {
+      onInstalled: { addListener: (fn) => listeners.onInstalled.push(fn) },
+      onStartup: { addListener: () => {} },
+      onMessage: { addListener: (fn) => listeners.onMessage.push(fn) },
+      sendMessage: async () => ({ ok: true }),
+    },
+    contextMenus: {
+      removeAll: (cb) => { createdMenus.length = 0; if (cb) cb(); },
+      create: (props, cb) => { createdMenus.push(props); if (cb) cb(); },
+      onClicked: { addListener: (fn) => listeners.onClicked.push(fn) },
+    },
+    storage: {
+      local: {
+        get: (keys, cb) => {
+          const res = {};
+          const list = Array.isArray(keys) ? keys : Object.keys(store);
+          for (const k of list) {
+            if (k in store) res[k] = store[k];
+          }
+          if (cb) cb(res);
+          return Promise.resolve(res);
+        },
+        set: (items, cb) => {
+          Object.assign(store, items);
+          if (cb) cb();
+          return Promise.resolve();
+        },
+      },
+    },
+    action: {
+      openPopup: () => Promise.resolve(),
+    },
+    tabs: {
+      query: (_q, cb) => {
+        const t = [{ id: 7, url: 'https://x.com/speaker/status/999888777' }];
+        if (cb) cb(t);
+        return Promise.resolve(t);
+      },
+    },
+    scripting: {
+      executeScript: (opts, cb) => {
+        const fakeDoc = {
+          querySelectorAll: (sel) => {
+            if (sel === 'video, audio') {
+              return [{ src: 'https://cdn.example.org/stage_clip.mp4' }];
+            }
+            return [];
+          },
+          querySelector: () => null,
+        };
+        const out = [{ result: opts.func(fakeDoc, { href: 'https://example.org/watch' }) }];
+        if (cb) cb(out);
+        return Promise.resolve(out);
+      },
+    },
+  };
+}
+
+function createMockElement(tag, id) {
+  const classes = new Set();
+  const attrs = {};
+  const listeners = {};
+  return {
+    tagName: String(tag || 'div').toUpperCase(),
+    id: id || '',
+    value: '',
+    textContent: '',
+    href: '#',
+    hidden: false,
+    disabled: false,
+    children: [],
+    get firstChild() {
+      return this.children[0] || null;
+    },
+    appendChild(child) {
+      this.children.push(child);
+      return child;
+    },
+    removeChild(child) {
+      const idx = this.children.indexOf(child);
+      if (idx >= 0) this.children.splice(idx, 1);
+      return child;
+    },
+    setAttribute(k, v) {
+      attrs[k] = String(v);
+    },
+    getAttribute(k) {
+      return attrs[k] || null;
+    },
+    addEventListener(ev, fn) {
+      listeners[ev] = listeners[ev] || [];
+      listeners[ev].push(fn);
+    },
+    trigger(ev) {
+      for (const fn of (listeners[ev] || [])) fn();
+    },
+    classList: {
+      add: (...c) => c.forEach((x) => classes.add(x)),
+      remove: (...c) => c.forEach((x) => classes.delete(x)),
+      toggle: (c, force) => {
+        const on = force !== undefined ? Boolean(force) : !classes.has(c);
+        if (on) classes.add(c); else classes.delete(c);
+      },
+      contains: (c) => classes.has(c),
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+}
+
+function createMockPopupDom() {
+  const elements = {};
+  const ids = [
+    'service-url-input',
+    'save-service-url-btn',
+    'service-url-saved',
+    'clip-url-input',
+    'clip-source-hint',
+    'detect-clip-btn',
+    'check-clip-btn',
+    'status-section',
+    'status-text',
+    'status-job-id',
+    'status-steps',
+    'error-banner',
+    'error-title',
+    'error-message',
+    'verdict-card',
+    'verdict-badge',
+    'verdict-stream',
+    'cuts-summary',
+    'cuts-list',
+    'stamp-badge',
+    'stamp-venue',
+    'stamp-time',
+    'stamp-scores',
+    'stamp-cuts-list',
+    'proof-link',
+  ];
+  for (const id of ids) {
+    elements[id] = createMockElement('div', id);
+  }
+  const stepNames = ['queued', 'fetching', 'detecting', 'labeling', 'done'];
+  const stepEls = stepNames.map((s) => {
+    const el = createMockElement('span', 'step-' + s);
+    el.setAttribute('data-step', s);
+    return el;
+  });
+  elements['status-steps'].querySelectorAll = () => stepEls;
+
+  return {
+    elements,
+    stepEls,
+    getElementById(id) {
+      return elements[id] || null;
+    },
+    createElement(tag) {
+      return createMockElement(tag);
+    },
+  };
+}
+
+(async () => {
+  // 1. Background context menu registration & click handling
+  const mockExt = createMockExt();
+  bg.initBackground(mockExt);
+  assert.strictEqual(mockExt.createdMenus.length, 1);
+  assert.strictEqual(mockExt.createdMenus[0].id, 'wholetake-check-clip');
+  assert.strictEqual(mockExt.createdMenus[0].title, 'Check this clip with Wholetake');
+  assert.deepStrictEqual(mockExt.createdMenus[0].contexts, ['video', 'audio', 'link', 'page']);
+
+  const clickRes = await bg.handleContextMenuClick(
+    { menuItemId: 'wholetake-check-clip', linkUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
+    { id: 1, url: 'https://www.youtube.com/' },
+    { ext: mockExt }
+  );
+  assert.strictEqual(clickRes.handled, true);
+  assert.strictEqual(mockExt.store.pendingClipUrl, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  assert.strictEqual(mockExt.store.lastCandidate.source, 'link');
+  assert.strictEqual(typeof mockExt.store.updatedAt, 'number');
+
+  // 2. Background runtime.onMessage (WT_GET_STATE and WT_CHECK_CLIP)
+  const stateRes = await bg.handleRuntimeMessage({ type: 'WT_GET_STATE' }, null, { ext: mockExt });
+  assert.strictEqual(stateRes.ok, true);
+  assert.strictEqual(stateRes.state.pendingClipUrl, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+
+  const checkRes = await bg.handleRuntimeMessage(
+    {
+      type: 'WT_CHECK_CLIP',
+      serviceUrl: baseUrl,
+      clipUrl: 'https://x.com/demo/status/10101',
+      intervalMs: 5,
+    },
+    null,
+    { ext: mockExt }
+  );
+  assert.strictEqual(checkRes.ok, true);
+  assert.strictEqual(checkRes.summary.verdict, 'cut');
+  assert.strictEqual(checkRes.summary.proofUrl, baseUrl + '/v/stagedjob0000001');
+
+  // 3. Page media detector
+  const detMedia = popup.detectMediaInPageContext(
+    {
+      querySelectorAll: (sel) => (sel === 'video, audio' ? [{ currentSrc: 'https://cdn.example.com/clip.mp4' }] : []),
+      querySelector: () => null,
+    },
+    { href: 'https://example.com/page' }
+  );
+  assert.strictEqual(detMedia.url, 'https://cdn.example.com/clip.mp4');
+  assert.strictEqual(detMedia.source, 'media');
+
+  // 4. Popup init + live polling across queued -> fetching -> detecting -> labeling -> done
+  const popupExt = createMockExt({});
+  const dom = createMockPopupDom();
+  const initState = await popup.initPopup({ doc: dom, ext: popupExt });
+  assert.strictEqual(initState.serviceUrl, 'http://127.0.0.1:8790');
+  assert.strictEqual(initState.clipUrl, 'https://cdn.example.org/stage_clip.mp4');
+  assert.strictEqual(dom.elements['clip-url-input'].value, 'https://cdn.example.org/stage_clip.mp4');
+
+  const seenSteps = [];
+  const runRes = await popup.startClipCheck({
+    doc: dom,
+    ext: popupExt,
+    serviceUrl: baseUrl,
+    clipUrl: 'https://www.instagram.com/reel/abc123/',
+    intervalMs: 5,
+    onProgress: (j) => {
+      if (j && j.status) seenSteps.push(j.status);
+    },
+  });
+  assert.strictEqual(runRes.ok, true);
+  for (const expectedStep of ['queued', 'fetching', 'detecting', 'labeling', 'done']) {
+    assert.ok(seenSteps.includes(expectedStep), 'missing polled step: ' + expectedStep);
+  }
+  assert.strictEqual(dom.elements['verdict-card'].hidden, false);
+  assert.strictEqual(dom.elements['verdict-badge'].textContent, 'CUT DETECTED');
+  assert.strictEqual(dom.elements['stamp-badge'].textContent, 'VERIFIED IN ROOM');
+  assert.strictEqual(dom.elements['stamp-venue'].textContent, 'main-hall');
+  assert.ok(dom.elements['stamp-scores'].textContent.includes('0.96'));
+  assert.ok(dom.elements['stamp-scores'].textContent.includes('0.88'));
+  assert.strictEqual(dom.elements['cuts-list'].children.length, 1);
+  assert.strictEqual(dom.elements['proof-link'].href, baseUrl + '/v/stagedjob0000001');
+
+  // 5. XSS safety check: javascript: proofUrl rejected
+  popup.renderVerdictCard(dom, {
+    verdict: 'cut',
+    cuts: [{ afterClipS: 1.0, srcS: [1.0, 2.0], words: '<img src=x onerror=alert(1)>' }],
+    stamp: { present: false },
+    proofUrl: 'javascript:alert(1)',
+  });
+  assert.strictEqual(dom.elements['proof-link'].href, '#');
+  assert.strictEqual(dom.elements['proof-link'].hidden, true);
+
+  // 6. Offline error state in popup
+  const offRes = await popup.startClipCheck({
+    doc: dom,
+    ext: popupExt,
+    serviceUrl: 'http://127.0.0.1:1',
+    clipUrl: 'https://x.com/user/status/555',
+    fetchImpl: async () => { throw new Error('ECONNREFUSED'); },
+  });
+  assert.strictEqual(offRes.ok, false);
+  assert.strictEqual(offRes.offline, true);
+  assert.strictEqual(dom.elements['error-banner'].hidden, false);
+  assert.ok(dom.elements['error-title'].textContent.includes('Offline'));
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"""
+
+
+def test_background_and_popup_wiring() -> None:
+    bg_path = EXT_DIR / "background.js"
+    popup_html_path = EXT_DIR / "popup.html"
+    popup_css_path = EXT_DIR / "popup.css"
+    popup_js_path = EXT_DIR / "popup.js"
+
+    for p in (bg_path, popup_html_path, popup_css_path, popup_js_path):
+        assert p.is_file(), f"missing required file: {p.name}"
+        assert p.stat().st_size > 0, f"file is empty: {p.name}"
+
+    bg_src = bg_path.read_text(encoding="utf-8")
+    assert "importScripts('api.js')" in bg_src or 'importScripts("api.js")' in bg_src, (
+        "background.js must load api.js via importScripts"
+    )
+    assert "wholetake-check-clip" in bg_src, "background.js must register menu id 'wholetake-check-clip'"
+    assert "Check this clip with Wholetake" in bg_src, (
+        "background.js must register title 'Check this clip with Wholetake'"
+    )
+    for ctx in ("video", "audio", "link", "page"):
+        assert ctx in bg_src, f"background.js missing context menu context: {ctx}"
+    for key in ("pendingClipUrl", "lastCandidate", "updatedAt", "WT_CHECK_CLIP", "WT_GET_STATE"):
+        assert key in bg_src, f"background.js missing required token: {key}"
+
+    html_src = popup_html_path.read_text(encoding="utf-8")
+    assert "popup.css" in html_src, "popup.html must link popup.css"
+    assert "api.js" in html_src, "popup.html must load api.js"
+    assert "popup.js" in html_src, "popup.html must load popup.js"
+    assert "Check this clip with Wholetake" in html_src, "popup.html missing primary button label"
+    assert "http://127.0.0.1:8790" in html_src, "popup.html missing default service URL"
+    for step in ("queued", "fetching", "detecting", "labeling", "done"):
+        assert step in html_src, f"popup.html missing status step {step}"
+
+    popup_src = popup_js_path.read_text(encoding="utf-8")
+    assert "executeScript" in popup_src, "popup.js must support scripting.executeScript media detection"
+    assert "textContent" in popup_src, "popup.js must safely render untrusted strings via textContent"
+    assert "innerHTML" not in popup_src, "popup.js must not use innerHTML"
+
+    httpd = _start_staged_mock_verdict_server()
+    base_url = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        node_bin = shutil.which("node")
+        if node_bin:
+            tmp_dir = Path(tempfile.mkdtemp())
+            try:
+                runner = tmp_dir / "run_wiring_test.js"
+                runner.write_text(NODE_WIRING_TEST_SCRIPT, encoding="utf-8")
+                proc = subprocess.run(
+                    [node_bin, str(runner), str(EXT_DIR), base_url],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                assert proc.returncode == 0, f"node wiring test failed: {proc.stderr or proc.stdout}"
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        else:
+            req = urllib.request.Request(
+                f"{base_url}/api/verdict",
+                data=json.dumps({"url": "https://x.com/i/status/1"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                sub = json.loads(resp.read().decode("utf-8"))
+            seen = []
+            for _ in range(6):
+                with urllib.request.urlopen(f"{base_url}/api/verdict/{sub['id']}", timeout=5) as resp:
+                    doc = json.loads(resp.read().decode("utf-8"))
+                seen.append(doc["status"])
+                if doc["status"] == "done":
+                    break
+            assert seen == ["queued", "fetching", "detecting", "labeling", "done"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def run_all() -> int:
     tests = [
         ("manifest_schema", test_manifest_schema),
@@ -526,6 +985,7 @@ def run_all() -> int:
         ("no_secrets_in_extension", test_no_secrets_in_extension),
         ("api_js_and_http_contract", test_api_js_and_http_contract),
         ("cors_and_error_edge_cases", test_cors_and_error_edge_cases),
+        ("background_and_popup_wiring", test_background_and_popup_wiring),
     ]
     failed = 0
     for name, fn in tests:
