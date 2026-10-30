@@ -237,6 +237,20 @@ def _downmix(x: np.ndarray, warnings: list[str], sr: int = FS) -> np.ndarray:
     return 0.5 * (L + R)
 
 
+def _resample_to_fs(m: np.ndarray, sr: int) -> np.ndarray:
+    if sr == FS or len(m) == 0:
+        return m
+    g = int(np.gcd(sr, FS))
+    up, down = FS // g, sr // g
+    if max(up, down) > MAX_RESAMPLE_FACTOR:
+        from fractions import Fraction
+        frac = Fraction(FS, sr).limit_denominator(MAX_RESAMPLE_FACTOR)
+        up, down = frac.numerator, frac.denominator
+    if up != down:
+        m = resample_poly(m, up, down)
+    return m
+
+
 def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
     if not os.path.isfile(path):
         raise ClipError("NOT_FOUND", f"no such file: {path}")
@@ -261,15 +275,7 @@ def ingest(path: str, max_s: float = MAX_CLIP_S) -> Clip:
     warnings: list[str] = []
     ch = x.shape[1]
     m = _downmix(x, warnings, sr=sr)
-    if sr != FS:
-        g = int(np.gcd(sr, FS))
-        up, down = FS // g, sr // g
-        if max(up, down) > MAX_RESAMPLE_FACTOR:
-            from fractions import Fraction
-            frac = Fraction(FS, sr).limit_denominator(MAX_RESAMPLE_FACTOR)
-            up, down = frac.numerator, frac.denominator
-        if up != down:
-            m = resample_poly(m, up, down)
+    m = _resample_to_fs(m, sr)
     dur = len(m) / FS
     if dur < MIN_CLIP_S and raw_dur < MIN_CLIP_S:
         raise ClipError("TOO_SHORT", f"clip is {dur:.1f} s; need at least {MIN_CLIP_S:.0f} s")
@@ -428,7 +434,8 @@ def load_session_log(path: str, venue_name: str) -> SessionLog:
     if feed_path and not secs:
         import soundfile as sf
         try:
-            t_end = t0 + max(0, int(np.ceil(sf.info(feed_path).frames / FS)))
+            info = sf.info(feed_path)
+            t_end = t0 + max(0, int(np.ceil(info.frames / max(1, info.samplerate))))
         except Exception:
             t_end = t0
     p = engine.StampParams(**{k: v for k, v in header["params"].items() if k in engine.StampParams.__dataclass_fields__})
@@ -460,12 +467,36 @@ def _env(x: np.ndarray, zi=None):
 def _feed_env(path: str) -> tuple[np.ndarray, float]:
     """Envelope of the whole feed (streamed) and its RMS in dBFS."""
     import soundfile as sf
+    info = sf.info(path)
+    sr = int(info.samplerate)
+    if sr < MIN_SR or sr > MAX_SR:
+        raise ValueError(f"unsupported feed sample rate: {sr} Hz")
     parts, zi, ss, n = [], None, 0.0, 0
-    for blk in sf.blocks(path, blocksize=ENV_HOP * 2000, dtype="float64", always_2d=True):
-        m = blk[:, 0] if blk.shape[1] == 1 else _downmix(blk, [], sr=FS)
-        ss, n = ss + float(np.sum(m * m)), n + len(m)
-        e, zi = _env(m, zi)
-        parts.append(e)
+    if sr == FS:
+        for blk in sf.blocks(path, blocksize=ENV_HOP * 2000, dtype="float64", always_2d=True):
+            m = blk[:, 0] if blk.shape[1] == 1 else _downmix(blk, [], sr=FS)
+            ss, n = ss + float(np.sum(m * m)), n + len(m)
+            e, zi = _env(m, zi)
+            parts.append(e)
+    else:
+        blk_sz = max(ENV_HOP, int(round(ENV_HOP * 2000 * sr / FS)))
+        rem = np.zeros(0, dtype=np.float64)
+        for blk in sf.blocks(path, blocksize=blk_sz, dtype="float64", always_2d=True):
+            m = blk[:, 0] if blk.shape[1] == 1 else _downmix(blk, [], sr=sr)
+            m = _resample_to_fs(m, sr)
+            if len(rem):
+                m = np.concatenate((rem, m))
+            nf = (len(m) // ENV_HOP) * ENV_HOP
+            if nf > 0:
+                chunk = m[:nf]
+                ss, n = ss + float(np.sum(chunk * chunk)), n + len(chunk)
+                e, zi = _env(chunk, zi)
+                parts.append(e)
+            rem = m[nf:]
+        if len(rem) >= ENV_HOP:
+            ss, n = ss + float(np.sum(rem * rem)), n + len(rem)
+            e, zi = _env(rem, zi)
+            parts.append(e)
     rms_db = 10 * np.log10(ss / max(n, 1) + 1e-24)
     return (np.concatenate(parts) if parts else np.zeros(0)), float(rms_db)
 
@@ -498,6 +529,20 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
     """Rough position of the clip in this session's feed via 10 ms log-energy envelopes."""
     if not sl.feed_path:
         return
+    import soundfile as sf
+    try:
+        info = sf.info(sl.feed_path)
+        sr = int(info.samplerate)
+    except Exception as e:
+        warnings.append(f"feed_unusable: {sl.sid} feed could not be read ({e}); informed check skipped")
+        sl.feed_path = None
+        return
+    if sr < MIN_SR or sr > MAX_SR:
+        warnings.append(f"feed_unusable: {sl.sid} feed has unsupported sample rate ({sr} Hz); informed check skipped")
+        sl.feed_path = None
+        return
+    if sr != FS:
+        warnings.append(f"feed_resampled: {sl.sid} feed is {sr} Hz (expected {FS} Hz); resampled to {FS} Hz")
     fe, rms_db = _feed_env(sl.feed_path)
     if rms_db < FEED_SILENT_DBFS:
         warnings.append(f"feed_silent: {sl.sid} recorded no clean feed ({rms_db:.0f} dBFS); "
@@ -586,10 +631,18 @@ def match_feed(clip_x: np.ndarray, sl: SessionLog, warnings: list[str]) -> None:
 
 def _read_feed(path: str, s0: int, s1: int) -> np.ndarray:
     import soundfile as sf
-    x, sr = sf.read(path, start=s0, stop=s1, dtype="float64", always_2d=True)
-    if sr != FS:
+    info = sf.info(path)
+    sr = int(info.samplerate)
+    if sr == FS:
+        x, _ = sf.read(path, start=s0, stop=s1, dtype="float64", always_2d=True)
+        return _downmix(x, [], sr=FS)
+    if sr < MIN_SR or sr > MAX_SR:
         raise ValueError(f"feed {path} is {sr} Hz, expected {FS}")
-    return _downmix(x, [], sr=sr)
+    n0 = max(0, int(round(s0 * sr / FS)))
+    n1 = max(n0, min(info.frames, int(round(s1 * sr / FS))))
+    x, _ = sf.read(path, start=n0, stop=n1, dtype="float64", always_2d=True)
+    m = _downmix(x, [], sr=sr)
+    return _resample_to_fs(m, sr)
 
 
 def _refine_piece_margins(clip_x: np.ndarray, feed: np.ndarray, sess_t_start: int, pieces: list[dict],
@@ -702,7 +755,14 @@ def run_l1(clip: Clip, sl: SessionLog, key: bytes, warnings: list[str]) -> tuple
     if not sl.feed_path:
         return _stage("skipped", summary="session has no clean feed recording"), None
     import soundfile as sf
-    n_feed = sf.info(sl.feed_path).frames
+    info = sf.info(sl.feed_path)
+    sr = int(info.samplerate)
+    if sr < MIN_SR or sr > MAX_SR:
+        warnings.append(f"feed_unusable: {sl.sid} feed has unsupported sample rate ({sr} Hz); informed check skipped")
+        return _stage("skipped", summary=f"session feed has unsupported sample rate ({sr} Hz)"), None
+    if sr != FS and not any(w.startswith(f"feed_resampled: {sl.sid} ") for w in warnings):
+        warnings.append(f"feed_resampled: {sl.sid} feed is {sr} Hz (expected {FS} Hz); resampled to {FS} Hz")
+    n_feed = info.frames if sr == FS else int(round(info.frames * FS / sr))
     if sl.env_z >= ENV_Z_MIN and sl.feed_offset_s is not None:
         margin = SLICE_MARGIN_S + 0.5 * clip.duration_s
         lo, hi = sl.feed_span_s or (sl.feed_offset_s, sl.feed_offset_s + clip.duration_s)
