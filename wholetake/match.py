@@ -83,15 +83,17 @@ def _sw_pieces(cw: list[asr.Word], ww: list[asr.Word]) -> list[list[tuple[int, i
     match_w = 1.0 + np.minimum(2.0, idf / 2.0)          # "the" ~ 1.3, a content word ~ 3
     S = np.where(cid[:, None] == wid[None, :], match_w[None, :],
                  np.where(cph[:, None] == wph[None, :], SW_PHON, SW_MISMATCH))
-    idx = np.arange(N + 1)
-    pieces = []
+    pieces: list[list[tuple[int, int]]] = []
     for _ in range(SW_MAX_PIECES):
+        if len(pieces) >= SW_MAX_PIECES:
+            break
         H = np.zeros((M + 1, N + 1))
         for i in range(1, M + 1):
             e = np.zeros(N + 1)
             e[1:] = np.maximum(H[i - 1, :-1] + S[i - 1], H[i - 1, 1:] + SW_GAP_CLIP)
-            e = np.maximum(e, 0.0)
-            H[i] = np.maximum.accumulate(e - SW_GAP_WIT * idx) + SW_GAP_WIT * idx
+            if N >= 2:
+                e[2:] = np.maximum(e[2:], H[i - 1, :-2] + S[i - 1, 1:] + SW_GAP_WIT)
+            H[i] = np.maximum(e, 0.0)
         i, j = np.unravel_index(int(np.argmax(H)), H.shape)
         if H[i, j] < SW_MIN_SCORE:
             break
@@ -103,14 +105,29 @@ def _sw_pieces(cw: list[asr.Word], ww: list[asr.Word]) -> list[list[tuple[int, i
                 i, j = i - 1, j - 1
             elif abs(H[i, j] - (H[i - 1, j] + SW_GAP_CLIP)) < 1e-9:
                 i -= 1
+            elif j >= 2 and abs(H[i, j] - (H[i - 1, j - 2] + S[i - 1, j - 1] + SW_GAP_WIT)) < 1e-9:
+                if S[i - 1, j - 1] > 0:
+                    anchors.append((i - 1, j - 1))
+                i, j = i - 1, j - 2
             else:
-                j -= 1
+                break
         anchors.reverse()
-        if len(anchors) < 3:
+        runs: list[list[tuple[int, int]]] = []
+        for c, w in anchors:
+            if runs and (w <= runs[-1][-1][1] or (w - runs[-1][-1][1]) - (c - runs[-1][-1][0]) >= 2):
+                runs.append([(c, w)])
+            elif runs:
+                runs[-1].append((c, w))
+            else:
+                runs.append([(c, w)])
+        kept = [r for r in runs if len(r) >= 3]
+        if not kept:
             break
-        pieces.append(anchors)
-        for c, _ in anchors:
-            S[c] = -10.0                              # mask matched clip tokens and look again
+        for r in kept:
+            if len(pieces) < SW_MAX_PIECES:
+                pieces.append(r)
+            for c, _ in r:
+                S[c] = -10.0                          # mask matched clip tokens and look again
     return pieces
 
 
