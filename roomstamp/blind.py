@@ -273,8 +273,14 @@ class Searcher:
 
 
 def gumbel_p(x: float, null: np.ndarray) -> float:
-    mu, sd = float(np.mean(null)), float(np.std(null, ddof=1)) + 1e-12
-    beta = sd * np.sqrt(6.0) / np.pi
+    null = np.asarray(null, dtype=np.float64)
+    if null.size == 0:
+        return 1.0
+    raw_sd = float(np.std(null, ddof=1)) if null.size > 1 else 0.0
+    if not np.isfinite(raw_sd) or raw_sd < 1e-9:
+        return 1.0 if float(x) <= float(np.max(null)) else 0.0
+    mu = float(np.mean(null))
+    beta = raw_sd * np.sqrt(6.0) / np.pi
     loc = mu - 0.5772156649 * beta
     return float(-np.expm1(-np.exp(-(x - loc) / beta)))
 
