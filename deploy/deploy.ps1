@@ -65,8 +65,9 @@ while ($i -lt $args.Count) {
         }
         '^(--env-file|-EnvFile)$' {
             $i++
-            if ($i -ge $args.Count) {
-                Write-Error "Missing value for $arg"
+            if ($i -ge $args.Count -or [string]::IsNullOrWhiteSpace([string]$args[$i]) -or ([string]$args[$i]).StartsWith("-")) {
+                [Console]::Error.WriteLine("ERROR: Missing value for $arg")
+                Show-Usage
                 exit 1
             }
             $EnvFile = [string]$args[$i]
@@ -75,8 +76,9 @@ while ($i -lt $args.Count) {
         }
         '^(--root|-Root)$' {
             $i++
-            if ($i -ge $args.Count) {
-                Write-Error "Missing value for $arg"
+            if ($i -ge $args.Count -or [string]::IsNullOrWhiteSpace([string]$args[$i]) -or ([string]$args[$i]).StartsWith("-")) {
+                [Console]::Error.WriteLine("ERROR: Missing value for $arg")
+                Show-Usage
                 exit 1
             }
             $RootDir = [string]$args[$i]
@@ -88,7 +90,7 @@ while ($i -lt $args.Count) {
             exit 0
         }
         default {
-            Write-Error "Unknown argument: $arg"
+            [Console]::Error.WriteLine("ERROR: Unknown argument: $arg")
             Show-Usage
             exit 1
         }

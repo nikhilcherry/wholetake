@@ -59,10 +59,20 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --env-file|-EnvFile)
+            if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" =~ ^- ]]; then
+                echo "ERROR: Missing value for $1" >&2
+                usage >&2
+                exit 1
+            fi
             ENV_FILE="$2"
             shift 2
             ;;
         --root|-Root)
+            if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" =~ ^- ]]; then
+                echo "ERROR: Missing value for $1" >&2
+                usage >&2
+                exit 1
+            fi
             ROOT_DIR="$2"
             shift 2
             ;;
