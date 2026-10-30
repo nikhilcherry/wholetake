@@ -281,15 +281,59 @@ def _tempo_refine(F, Fw, regions, alpha0: float, text_tempo: bool) -> float:
     return float(best_a)
 
 
+def _pred_off(g: list, u: float, tail: bool = True) -> float:
+    sub = g[-20:] if tail else g[:20]
+    us = np.array([w[0] for w in sub], float)
+    os_ = np.array([w[1] for w in sub], float)
+    if len(sub) >= 5 and np.ptp(us) > 0:
+        c1, c0 = np.polyfit(us, os_, 1)
+        if abs(c1) <= 0.01:
+            return float(c0 + c1 * u)
+    return float(np.median(os_))
+
+
+def _same_line(prev: list, g: list) -> bool:
+    if abs(np.median([w[1] for w in g]) - np.median([w[1] for w in prev])) <= TRACK_TOL:
+        return True
+    if abs(np.median([w[1] - _pred_off(prev, w[0], tail=True) for w in g[:5]])) <= TRACK_TOL:
+        return True
+    if abs(np.median([w[1] - _pred_off(g, w[0], tail=False) for w in prev[-5:]])) <= TRACK_TOL:
+        return True
+    us_p = np.array([w[0] for w in prev], float)
+    os_p = np.array([w[1] for w in prev], float)
+    us_g = np.array([w[0] for w in g], float)
+    os_g = np.array([w[1] for w in g], float)
+    if np.ptp(np.concatenate([us_p, us_g])) > 0:
+        c1, c0 = np.polyfit(np.concatenate([us_p, us_g]), np.concatenate([os_p, os_g]), 1)
+        if abs(c1) <= 0.01:
+            rp = np.abs(os_p - (c0 + c1 * us_p))
+            rg = np.abs(os_g - (c0 + c1 * us_g))
+            if (np.median(rp) <= TRACK_TOL and np.median(rg) <= TRACK_TOL
+                    and np.median(rp[-5:]) <= TRACK_TOL and np.median(rg[:5]) <= TRACK_TOL):
+                return True
+    return False
+
+
+def _piece_from_windows(g: list) -> Piece:
+    us = np.array([w[0] for w in g], float)
+    os_ = np.array([w[1] for w in g], float)
+    c1, c0 = (np.polyfit(us, os_, 1) if len(g) >= 5 and np.ptp(us) > 0 else (0.0, float(np.median(os_))))
+    if abs(c1) > 0.01:  # tempo residual can only be tiny after warping; else fall back to flat
+        c1, c0 = 0.0, float(np.median(os_))
+    return Piece(int(us[0]), int(us[-1]) + WIN, float(c0), float(c1), g, float(np.median([w[2] for w in g])))
+
+
+def _merge_pieces(A: Piece, B: Piece) -> Piece:
+    return _piece_from_windows(A.windows + B.windows)
+
+
 def _group(track) -> list[Piece]:
     good = [(u, s - u, r) for u, s, r, z in track if s is not None and r >= R_MIN and z >= Z_MIN]
     groups: list[list] = []
     for u, off, r in good:
         g = groups[-1] if groups else None
         if g is not None:
-            us = np.array([w[0] for w in g[-20:]])
-            os_ = np.array([w[1] for w in g[-20:]])
-            pred = (np.polyval(np.polyfit(us, os_, 1), u) if len(g) >= 5 and np.ptp(us) > 0 else np.median(os_))
+            pred = _pred_off(g, u, tail=True)
             if abs(off - pred) <= TRACK_TOL:
                 g.append((u, off, r))
                 continue
@@ -297,19 +341,11 @@ def _group(track) -> list[Piece]:
     groups = [g for g in groups if len(g) >= MIN_PIECE_WINDOWS]
     merged: list[list] = []
     for g in groups:  # same line after an interruption (noise burst, applause) = still continuous
-        if merged and abs(np.median([w[1] for w in g]) - np.median([w[1] for w in merged[-1]])) <= TRACK_TOL:
+        if merged and _same_line(merged[-1], g):
             merged[-1] += g
         else:
             merged.append(g)
-    pieces = []
-    for g in merged:
-        us = np.array([w[0] for w in g], float)
-        os_ = np.array([w[1] for w in g], float)
-        c1, c0 = (np.polyfit(us, os_, 1) if len(g) >= 5 and np.ptp(us) > 0 else (0.0, float(np.median(os_))))
-        if abs(c1) > 0.01:  # tempo residual can only be tiny after warping; else fall back to flat
-            c1, c0 = 0.0, float(np.median(os_))
-        pieces.append(Piece(int(us[0]), int(us[-1]) + WIN, float(c0), float(c1), g, float(np.median([w[2] for w in g]))))
-    return pieces
+    return [_piece_from_windows(g) for g in merged]
 
 
 def _frame_sim(Fc, Fw, piece: Piece, lo: int, hi: int, pause: float | None = None) -> np.ndarray:
@@ -437,6 +473,16 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
 
     def clip_t(u):  # warped frame -> clip seconds
         return float(u) / FPS / alpha
+
+    while len(pieces) > 1:
+        for i in range(len(pieces) - 1):
+            a_end, b_start, u_cut, offA, offB = _boundary(G, Fw, pieces[i], pieces[i + 1])
+            is_foreign = (b_start - a_end) / FPS >= FOREIGN_MIN_S and _speech_frac(G, a_end, b_start) > 0.5
+            if not is_foreign and abs((u_cut + offB) / FPS - (u_cut + offA) / FPS) <= JUMP_MIN:
+                pieces[i:i + 2] = [_merge_pieces(pieces[i], pieces[i + 1])]
+                break
+        else:
+            break
 
     bounds = [_boundary(G, Fw, A, B) for A, B in zip(pieces, pieces[1:])]
     foreign = [(b_start - a_end) / FPS >= FOREIGN_MIN_S and _speech_frac(G, a_end, b_start) > 0.5
