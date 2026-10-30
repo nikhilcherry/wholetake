@@ -46,7 +46,7 @@ PSR_JUMP = 12.0            # ... or that jumps to a new offset within the local 
 PSR_GLOBAL_EXTRA = 3.0     # global threshold = sqrt(2 ln N_lags) + this
 OFF_TOL = int(0.005 * FS)  # windows within 5 ms belong to one piece
 EDIT_MIN = int(0.004 * FS) # offset jumps smaller than 4 ms are not reported as edits
-MAX_DRIFT = 300e-6
+MAX_DRIFT = 2500e-6
 GAP_UNMATCHED = int(2.5 * FS)  # longer unmatched gaps between pieces = foreign audio
 
 # --- stamp scoring (48 kHz) ---
@@ -306,18 +306,26 @@ def fit_piece(g: list[Win], yb: np.ndarray, xb: np.ndarray) -> Piece:
     if len(c) == 0:
         c, fine = np.array([g[0].c8 * DEC], float), np.array([g[0].f8 * DEC], float)
     b = 0.0
-    if len(c) >= 4 and c[-1] - c[0] >= 4 * FS:
+    if len(c) >= 4 and c[-1] - c[0] >= 2 * FS:
+        long_span = (c[-1] - c[0]) >= 4 * FS
+        mad = np.inf
         for _ in range(3):  # least squares with outlier rejection
             A = np.vstack([np.ones_like(c), c]).T
             coef, *_ = np.linalg.lstsq(A, fine, rcond=None)
             r = fine - A @ coef
-            keep = np.abs(r) <= max(3.0, 3 * 1.4826 * np.median(np.abs(r)))
-            if keep.all():
+            mad = 1.4826 * float(np.median(np.abs(r)))
+            keep = np.abs(r) <= max(3.0, 3 * mad)
+            if keep.all() or keep.sum() < 4:
                 break
             c, fine = c[keep], fine[keep]
         b = float(coef[1] - 1.0)
-        if abs(b) > MAX_DRIFT:
-            b = 0.0
+        if long_span:
+            max_b = MAX_DRIFT if mad <= 10.0 else 300e-6
+            if abs(b) > max_b:
+                b = 0.0
+        else:
+            if not (300e-6 < abs(b) <= MAX_DRIFT and mad <= 2.0):
+                b = 0.0
     a = float(np.median(fine - (1.0 + b) * c))
     p = Piece(c0=int(g[0].c8 * DEC), c1=min(int(g[-1].c8 * DEC + FS), len(yb)), a=a, b=b, n_win=len(g),
               psr=float(np.median([w.psr for w in g])))
