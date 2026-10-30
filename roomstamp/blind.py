@@ -369,7 +369,7 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
     taus = tuple(float(x) for x in taus)
     dur = len(clip) / FS
     if dur < MIN_CLIP_S:
-        return {"verdict": "too short", "present": False, "clip_s": round(dur, 1),
+        return {"verdict": "too short", "present": False, "clip_s": math.floor(dur * 10) / 10,
                 "note": f"blind envelope check needs >= {MIN_CLIP_S:.0f} s (>= 20 s for a confident verdict)"}
     if t_lo > t_hi:
         t_lo, t_hi = t_hi, t_lo
