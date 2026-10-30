@@ -1249,7 +1249,7 @@ def fuse(doc: dict) -> dict:
     unanchored = False
     if isinstance(proof, dict) and proof.get("session_id") is not None:
         af = proof.get("anchored_fraction")
-        if not proof.get("drand_rounds") or (af is not None and af == 0.0):
+        if (af is not None and af == 0.0) or (af is None and not proof.get("drand_rounds")):
             unanchored = True
         elif af is not None and af < 0.5:
             warns.append(
@@ -1426,12 +1426,21 @@ def _proof(sl: SessionLog | None, doc: dict, clip: Clip) -> dict:
         if a < b:
             d["matched_t_range"] = [a, b]
             secs = [s for s in sl.secs if a <= s["t"] < b]
-            d["anchors"] = [{"t": s["t"], "round": s.get("round"), "anchored": s.get("anchored"),
+            d["anchors"] = [{"t": s["t"],
+                             "round": s.get("round") if s.get("round") is not None else spec.round_for(int(s["t"])),
+                             "anchored": s.get("anchored"),
                              "randomness": s.get("randomness"), "anchor": s.get("anchor"),
                              "dac_utc": s.get("dac_utc")} for s in secs]
-            d["drand_rounds"] = sorted({s["round"] for s in secs if s.get("round") is not None and s.get("anchored")})
+            d["drand_rounds"] = sorted({
+                int(s["round"] if s.get("round") is not None else spec.round_for(int(s["t"])))
+                for s in secs if s.get("anchored")
+            })
             d["anchored_fraction"] = round(sl.session().anchored_fraction(a, b - 1), 4)
     elif sl and sl.secs:
+        d["drand_rounds"] = sorted({
+            int(s["round"] if s.get("round") is not None else spec.round_for(int(s["t"])))
+            for s in sl.secs if s.get("anchored")
+        })
         d["anchored_fraction"] = round(sl.session().anchored_fraction(sl.t_start, max(sl.t_start, sl.t_end - 1)), 4)
     return d
 
