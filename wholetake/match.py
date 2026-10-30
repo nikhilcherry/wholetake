@@ -187,6 +187,8 @@ def _scan(Fc: np.ndarray, Fw: np.ndarray, regions, win=WIN, hop=HOP, starts=None
     valid_regions = [(r0, r1) for r0, r1 in regions if r1 - r0 - win + 1 > 0]
     if not valid_regions:
         return [(int(u), None, 0.0, 0.0) for u in starts]
+    w_cs = np.concatenate([[0], np.cumsum((np.abs(Fw).sum(1) > 0).astype(np.int32))])
+    w_mask = np.concatenate([w_cs[r0 + win:r1 + 1] - w_cs[r0:r1 - win + 1] for r0, r1 in valid_regions]) >= MIN_ACTIVE * win
     # Window score at witness start s = sum_k cos(clip[u+k], wit[s+k]): diagonal sums of the
     # frame-similarity matrix, evaluated in bounded batches of windows and witness sub-chunks
     # so peak memory stays well below 100 MB even on 600 s clips vs 1200 s witness records.
@@ -248,8 +250,14 @@ def _scan(Fc: np.ndarray, Fw: np.ndarray, regions, win=WIN, hop=HOP, starts=None
                     pos = r0_ + (k - off)
                     break
                 off += S.shape[1]
-            med = np.median(allc)
-            mad = 1.4826 * np.median(np.abs(allc - med)) + 1e-6
+            pool = allc[w_mask & (allc != 0)]
+            if len(pool) == 0:
+                pool = allc[allc != 0]
+            if len(pool) == 0:
+                med, mad = 0.0, 0.02
+            else:
+                med = float(np.median(pool))
+                mad = max(float(1.4826 * np.median(np.abs(pool - med))), 0.02)
             out.append((int(u), int(pos), float(allc[k]), float((allc[k] - med) / mad)))
     return out
 
