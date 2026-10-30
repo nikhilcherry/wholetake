@@ -329,8 +329,10 @@ class VerdictManager:
         job = self.get_job(job_id)
         if not job:
             return
-        url = job["url"]
         try:
+            url = job["url"]
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("missing or empty 'url'")
             self._set_status(job_id, "fetching")
             clip_info = self.fetch_fn(url)
             heads = witness_heads_snapshot(self.witness_root)
@@ -387,6 +389,11 @@ class VerdictManager:
                 break
             try:
                 self.process_one(jid)
+            except Exception as e:
+                try:
+                    self._set_status(jid, "error", error=str(e))
+                except Exception:
+                    pass
             finally:
                 self._queue.task_done()
 
