@@ -178,8 +178,8 @@ run_local_demo() {
 
     case "$action" in
         start|up)
-            local simx_cmd="$PY_BIN -m simx serve --host 127.0.0.1 --port 8791 --data $ROOT_DIR/data/simx"
-            local verdict_cmd="WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=$ROOT_DIR/data/witness WT_VERDICTS_DIR=$ROOT_DIR/data/verdicts WHOLETAKE_ASR=none $PY_BIN -m verdict serve --host 127.0.0.1 --port 8790"
+            local simx_cmd="$PY_BIN -m simx serve --host 127.0.0.1 --port 8791 --data \"$ROOT_DIR/data/simx\""
+            local verdict_cmd="WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=\"$ROOT_DIR/data/witness\" WT_VERDICTS_DIR=\"$ROOT_DIR/data/verdicts\" WHOLETAKE_ASR=none $PY_BIN -m verdict serve --host 127.0.0.1 --port 8790"
             if [[ "$DRY_RUN" -eq 1 ]]; then
                 echo "[dry-run] $simx_cmd"
                 echo "[dry-run] $verdict_cmd"

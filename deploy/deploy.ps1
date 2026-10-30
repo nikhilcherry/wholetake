@@ -185,18 +185,19 @@ function Invoke-LocalDemo {
 
     switch -Regex ($Action) {
         '^(start|up)$' {
-            $simxCmd = "python -m simx serve --host 127.0.0.1 --port 8791 --data $simxData"
+            $simxCmd = "python -m simx serve --host 127.0.0.1 --port 8791 --data `"$simxData`""
             $verdictCmd = "python -m verdict serve --host 127.0.0.1 --port 8790"
             if ($DryRun) {
                 Write-Output "[dry-run] $simxCmd"
-                Write-Output "[dry-run] WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=$witnessRoot WT_VERDICTS_DIR=$verdictsDir WHOLETAKE_ASR=none $verdictCmd"
+                Write-Output "[dry-run] WT_FETCH_ALLOW_HOSTS=127.0.0.1:8791 WT_WITNESS_ROOT=`"$witnessRoot`" WT_VERDICTS_DIR=`"$verdictsDir`" WHOLETAKE_ASR=none $verdictCmd"
                 if ($WithDaemons) {
                     Write-Output "[dry-run] X_API_BASE=http://127.0.0.1:8791 X_BOT_TOKEN=sim-wholetake WT_VERDICT_URL=http://127.0.0.1:8790 WT_PAGE_BASE=http://127.0.0.1:8790 python -m bot run"
                 }
                 return
             }
 
-            $pSimx = Start-Process -FilePath "python" -ArgumentList @("-m", "simx", "serve", "--host", "127.0.0.1", "--port", "8791", "--data", $simxData) -WorkingDirectory $DefaultRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RootDir "logs/simx.log") -RedirectStandardError (Join-Path $RootDir "logs/simx.err.log")
+            $quotedSimxData = "`"$simxData`""
+            $pSimx = Start-Process -FilePath "python" -ArgumentList @("-m", "simx", "serve", "--host", "127.0.0.1", "--port", "8791", "--data", $quotedSimxData) -WorkingDirectory $DefaultRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RootDir "logs/simx.log") -RedirectStandardError (Join-Path $RootDir "logs/simx.err.log")
             [System.IO.File]::WriteAllText($simxPidFile, "$($pSimx.Id)")
 
             $env:WT_FETCH_ALLOW_HOSTS = "127.0.0.1:8791"
