@@ -106,8 +106,11 @@ def read_log(path: str) -> tuple[dict, dict[int, dict]]:
     Randomness is per SECOND: the emitter may have used a round for one second and not for
     the next one sharing it; the verifier must reproduce exactly that."""
     header, secs = None, {}
-    with open(path, encoding="utf-8") as f:
-        lines = [line for line in f if line.strip()]
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [line for line in f if line.strip()]
+    except OSError as e:
+        raise SystemExit(f"cannot read log file {path}: {e}") from None
     for i, line in enumerate(lines):
         try:
             r = json.loads(line)
@@ -115,7 +118,8 @@ def read_log(path: str) -> tuple[dict, dict[int, dict]]:
             if i == len(lines) - 1:
                 print(f"warning: ignoring truncated final line in {path}", file=sys.stderr)
                 break
-            raise
+            print(f"warning: ignoring corrupt line {i + 1} in {path}", file=sys.stderr)
+            continue
         if not isinstance(r, dict):
             continue
         rtype = r.get("type")
