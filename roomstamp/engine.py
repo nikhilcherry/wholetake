@@ -206,12 +206,14 @@ class KeystreamSequencer:
     and the emitter may have had it for some of them but not others."""
 
     def __init__(self, key: bytes, t_start: int, delta_db: float, randomness_for_second):
+        if isinstance(t_start, bool) or not isinstance(t_start, (int, np.integer)):
+            raise ValueError(f"t_start must be an integer, got {t_start!r}")
         self.key = key
         self.delta = delta_db
         self.lookup = randomness_for_second
         self.next_t = int(t_start)
-        if self.next_t < 1:
-            raise ValueError(f"t_start must be >= 1, got {t_start}")
+        if self.next_t < 1 or self.next_t >= (1 << 64):
+            raise ValueError(f"t_start must be in [1, 2^64), got {t_start}")
         # second t_start-1 is the warm-up predecessor: its seed (layer-1 warm-up) and its
         # signs (layer-2 transition into frame 0) shape the first real second
         t = self.next_t - 1
@@ -222,6 +224,8 @@ class KeystreamSequencer:
 
     def next(self) -> PreparedSecond:
         t = self.next_t
+        if t >= (1 << 64):
+            raise ValueError(f"timestamp t must be in [0, 2^64): got {t}")
         ks = spec.SecondKeystream(self.key, t, self.lookup(t), spec.round_for(t), self.prev_seed)
         ps = prepare_second(ks, self.prev_signs, self.delta)
         self.prev_seed, self.prev_signs = ks.seed, ks.signs
@@ -234,10 +238,15 @@ def render(x: np.ndarray, key: bytes, t_start: int, params: StampParams, randomn
            states: list[tuple[float, float]] | None = None):
     """Offline render through the exact real-time code path. len(x) is padded to whole seconds.
     For a mid-session section pass the logged ref_rms/gain of its first second."""
+    if isinstance(t_start, bool) or not isinstance(t_start, (int, np.integer)):
+        raise ValueError(f"t_start must be an integer, got {t_start!r}")
+    t0 = int(t_start)
     n_sec = -(-len(x) // FS)
+    if t0 < 1 or t0 >= (1 << 64) or t0 + n_sec > (1 << 64):
+        raise ValueError(f"t_start..t_start+n_sec must be in [1, 2^64], got t_start={t_start}, n_sec={n_sec}")
     xp = np.zeros(n_sec * FS)
     xp[:len(x)] = x
-    seq = KeystreamSequencer(key, t_start, params.l2_delta_db if params.mode != "table" else 0.0, randomness_for_second)
+    seq = KeystreamSequencer(key, t0, params.l2_delta_db if params.mode != "table" else 0.0, randomness_for_second)
     eng = Stamper(params, ref_rms=ref_rms, gain=gain)
     out = np.empty(n_sec * FS, dtype=np.float32)
     stamp = np.empty(n_sec * FS, dtype=np.float32)

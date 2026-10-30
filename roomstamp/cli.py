@@ -66,6 +66,10 @@ def cmd_render(a) -> None:
         raise SystemExit("input WAV is empty")
     p = params_from(a)
     t0 = a.t_start if a.t_start is not None else int(time.time()) - (len(x) // FS + 10)   # recent past: all rounds published
+    n_sec = -(-len(x) // FS)
+    if isinstance(t0, bool) or not isinstance(t0, (int, np.integer)) or int(t0) < 1 or int(t0) >= (1 << 64) or int(t0) + n_sec > (1 << 64):
+        raise ValueError(f"t_start..t_start+n_sec must be in [1, 2^64], got t_start={t0!r}, n_sec={n_sec}")
+    t0 = int(t0)
     cache: dict[int, bytes | None] = {}
 
     def lookup(t):

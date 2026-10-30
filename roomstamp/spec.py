@@ -91,6 +91,8 @@ def second_seed(key: bytes, t: int, randomness: bytes | None) -> bytes:
     r = randomness if randomness is not None else ZERO_R
     if not isinstance(r, (bytes, bytearray, memoryview)) or len(r) != 32:
         raise ValueError("randomness must be 32 bytes")
+    if isinstance(t, bool) or not isinstance(t, (int, np.integer)):
+        raise ValueError(f"timestamp t must be an integer, got {t!r}")
     ti = int(t)
     if ti < 0 or ti >= (1 << 64):
         raise ValueError(f"timestamp t must be in [0, 2^64): got {t}")
@@ -143,11 +145,13 @@ class SecondKeystream:
 
     def __init__(self, key: bytes, t: int, randomness: bytes | None, rnd: int,
                  prev_seed: bytes):
+        if isinstance(t, bool) or not isinstance(t, (int, np.integer)):
+            raise ValueError(f"timestamp t must be an integer, got {t!r}")
         self.t = int(t)
         self.round = rnd  # always round_for(t); `anchored` says whether its randomness was used
         self.anchored = randomness is not None
         self.randomness = randomness
-        self.seed = second_seed(key, t, randomness)
+        self.seed = second_seed(key, self.t, randomness)
         self.anchor = anchor_hash(self.seed)
         self.l1 = l1_second(prev_seed, self.seed)
         self.signs = l2_signs(self.seed)
