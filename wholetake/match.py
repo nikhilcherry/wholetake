@@ -339,12 +339,15 @@ def _merge_pieces(A: Piece, B: Piece) -> Piece:
     return _piece_from_windows(A.windows + B.windows)
 
 
-def _group(track) -> list[Piece]:
+def _group(track, F: np.ndarray | None = None) -> list[Piece]:
+    def _active_gap(a: int, b: int) -> bool:
+        return b - a >= FOREIGN_MIN_S * FPS and (F is None or _speech_frac(F, a, b) > 0.5)
+
     good = [(u, s - u, r) for u, s, r, z in track if s is not None and r >= R_MIN and z >= Z_MIN]
     groups: list[list] = []
     for u, off, r in good:
         g = groups[-1] if groups else None
-        if g is not None:
+        if g is not None and not _active_gap(g[-1][0] + WIN, u):
             pred = _pred_off(g, u, tail=True)
             if abs(off - pred) <= TRACK_TOL:
                 g.append((u, off, r))
@@ -353,7 +356,7 @@ def _group(track) -> list[Piece]:
     groups = [g for g in groups if len(g) >= MIN_PIECE_WINDOWS]
     merged: list[list] = []
     for g in groups:  # same line after an interruption (noise burst, applause) = still continuous
-        if merged and _same_line(merged[-1], g):
+        if merged and _same_line(merged[-1], g) and not _active_gap(merged[-1][-1][0] + WIN, g[0][0]):
             merged[-1] += g
         else:
             merged.append(g)
@@ -411,9 +414,11 @@ def _boundary(Fc, Fw, A: Piece, B: Piece):
     cA = np.concatenate([[0.0], np.cumsum(dA)])
     cB = np.concatenate([[0.0], np.cumsum(dB)])
     u_cut = lo + int(np.argmax(cA + (cB[-1] - cB)))
-    a_end = lo + int(np.argmax(np.concatenate([[0.0], np.cumsum(dA - EDGE_THETA)])))
-    tail = np.concatenate([np.cumsum((dB - EDGE_THETA)[::-1])[::-1], [0.0]])
-    b_start = lo + int(np.argmax(tail))
+    a_hi = B.u0 if A.u1 <= B.u0 else hi
+    b_lo = A.u1 if A.u1 <= B.u0 else lo
+    a_end = lo + int(np.argmax(np.concatenate([[0.0], np.cumsum(dA[:max(0, a_hi - lo)] - EDGE_THETA)])))
+    tail = np.concatenate([np.cumsum((dB[max(0, b_lo - lo):] - EDGE_THETA)[::-1])[::-1], [0.0]])
+    b_start = max(lo, b_lo) + int(np.argmax(tail))
     R = int(REFINE_S * FPS)
     offA = _subframe_off(Fc, Fw, A, max(A.u0, u_cut - R), u_cut)
     offB = _subframe_off(Fc, Fw, B, u_cut, min(B.u1, u_cut + R))
@@ -476,7 +481,7 @@ def match(rec: Record, clip: np.ndarray, language: str | None = "en") -> dict:
         return _done(result, t0)
     alpha = _tempo_refine(Fc, Fw, regions, alpha0, alpha_t is not None)
     G = warp(Fc, alpha)
-    pieces = _group(_scan(G, Fw, regions))
+    pieces = _group(_scan(G, Fw, regions), G)
     tm["acoustic_ms"] = (time.time() - t3) * 1e3
     result["tempo"] = round(alpha, 3)
     covered = sum(p.u1 - p.u0 for p in pieces) / FPS
