@@ -1054,6 +1054,7 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
         lo = float(r_e[0]) if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[0] is not None) else ct_e
         hi = float(r_e[1]) if (isinstance(r_e, (list, tuple)) and len(r_e) >= 2 and r_e[1] is not None) else ct_e
         dup = None
+        best_key = None
         for k in out:
             ct_k = float(k.get("clip_t") or 0.0)
             r_k = k.get("clip_t_range")
@@ -1064,8 +1065,10 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
                 and _kinds_compatible(k.get("kind"), e.get("kind"))
                 and lo - 2.0 <= k_hi and k_lo <= hi + 2.0
             ):
-                dup = k
-                break
+                cand_key = (abs(ct_k - ct_e), rank[k["source"]])
+                if best_key is None or cand_key < best_key:
+                    best_key = cand_key
+                    dup = k
         if dup is None:
             out.append(dict(e))
             continue
