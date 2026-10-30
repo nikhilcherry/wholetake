@@ -473,9 +473,22 @@ def _feed_env(path: str) -> tuple[np.ndarray, float]:
 def _hp_env(e: np.ndarray) -> np.ndarray:
     if len(e) == 0:
         return e
-    active = e[e >= np.percentile(e, 95) - 3.0]
-    floor = np.percentile(active if len(active) else e, 20)
-    e = np.maximum(e, floor)                       # pauses -> floor, so silence doesn't dominate
+    nz = e[e > -11.5]
+    if len(nz) == 0:
+        nz = e
+    p15, p75 = (float(x) for x in np.percentile(nz, [15, 75]))
+    if p75 < -5.5 and p75 - p15 < 0.35:
+        above = nz[nz > p75 + 0.4]
+        if len(above) >= 20:
+            nz = above
+            p75 = float(np.percentile(nz, 75))
+    ref = min(float(np.percentile(nz, 95)), p75 + 1.0)
+    cap = ref + 1.0
+    active = nz[(nz >= ref - 3.0) & (nz <= cap)]
+    if len(active) == 0:
+        active = nz[nz >= ref - 3.0]
+    floor = float(np.percentile(active if len(active) else nz, 20))
+    e = np.clip(e, floor, cap)                     # pauses -> floor, transients -> cap
     k = np.ones(101) / 101
     pad = np.pad(e, 50, mode="edge")
     return e - np.convolve(pad, k, mode="valid")
