@@ -63,7 +63,7 @@ MATCH_PSR_ALONE = 15.0
 # a short piece between two same-offset pieces is a repeated phrase (merged) if the neighbours'
 # alignment cancels its speech within BLIP_DB of its own alignment
 BLIP_MAX_WIN, BLIP_MAX_S, BLIP_DB = 3, 2.0, 3.0
-MIN_PIECE_S = 0.15         # pieces squeezed shorter than this by neighbouring cuts are dropped
+MIN_PIECE_S = 0.25         # pieces squeezed shorter than this by neighbouring cuts are dropped
 WRONG_MARGIN = 2.5         # present also needs clip_z >= best wrong-key clip_z + this
 N_WRONG = 3
 WARMUP_S = 10
@@ -848,8 +848,11 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     out_pieces = []
     for p in pieces:
         n = p.c1 - p.c0
-        if n < FS // 4:
-            p.stamp = {"windows": 0, "clip_z": 0.0, "frac_z5": 0.0, "median_z": 0.0, "status": "too short"}
+        if n < max(FS // 4, int(MIN_PIECE_S * FS)):
+            ch = Channel(clip[p.c0:p.c1], warp([rend.voice], p.f(np.arange(p.c0, p.c1)) - rend.base)[0]) if n > 0 else None
+            p.stamp = {"windows": 0, "clip_z": 0.0, "frac_z5": 0.0, "median_z": 0.0, "stamp_lag_ms": 0.0,
+                       "wrong_key_max_z": 0.0, "wrong_key_frac_z5": 0.0,
+                       "speech_removed_db": ch.removed_db if ch is not None else 0.0, "status": "too short"}
             continue
         # voice, stamp and the wrong-key stamps over the piece +- 1 s, warped in one pass
         ce = np.arange(p.c0 - FS, p.c1 + FS)
@@ -892,7 +895,7 @@ def _verify(clip: np.ndarray, feed: np.ndarray, sess: Session, key: bytes, log=p
     scored = [s for s in statuses if s and s != "too short"]
     if scored and all(s == "present" for s in scored):
         stamp = "present"
-    elif "present" in scored or "inconclusive" in scored:
+    elif not scored or "present" in scored or "inconclusive" in scored:
         stamp = "inconclusive"
     else:
         stamp = "absent"
@@ -947,7 +950,9 @@ def human_verdict(r: dict) -> str:
     st = r["stamp"]
     p_statuses = [p.get("l1_status") for p in pieces]
     scored = [s for s in p_statuses if s and s != "too short"]
-    if st == "present" and (not scored or not all(s == "present" for s in scored)):
+    if not scored:
+        st = "inconclusive"
+    elif st == "present" and not all(s == "present" for s in scored):
         st = "inconclusive" if ("present" in scored or "inconclusive" in scored) else "absent"
     head = {"present": f"Recorded at {where}.",
             "inconclusive": f"Matches {where}; room stamp inconclusive.",
