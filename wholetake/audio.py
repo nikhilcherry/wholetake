@@ -63,8 +63,9 @@ def logmel(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     _, _, Z = stft(x, fs=SR, window="hann", nperseg=NFFT, noverlap=NFFT - HOP,
                    boundary="even", padded=True)
     p = (np.abs(Z) ** 2).T
-    mel = 10.0 * np.log10(p @ MEL_FB.T + 1e-10)
-    energy = 10.0 * np.log10(p.sum(axis=1) + 1e-10)
+    mel_p = p @ MEL_FB.T
+    mel = 10.0 * np.log10(mel_p + 1e-10)
+    energy = 10.0 * np.log10(mel_p.sum(axis=1) + 1e-10)
     return mel, energy
 
 
