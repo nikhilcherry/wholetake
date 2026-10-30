@@ -160,8 +160,12 @@ def clip_band_power(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     each frame's centre in clip samples. Not the spec's IIR filters: those overlap so much that
     neighbouring bands (opposite signs) cancel, and measuring with them loses ~1/3 of z."""
     hop = HOP // 2
+    x = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
     if len(x) < STFT_WIN:
         return np.zeros((0, L2_NBANDS)), np.zeros(0)
+    peak = float(np.max(np.abs(x)))
+    if peak > 1.0:
+        x = x / peak
     f, _, X = stft(x, FS, window="hann", nperseg=STFT_WIN, noverlap=STFT_WIN - hop, boundary=None, padded=False)
     P = np.abs(X) ** 2
     P = np.stack([P[(f >= L2_EDGES[b]) & (f < L2_EDGES[b + 1])].sum(axis=0) for b in range(L2_NBANDS)], axis=1)
@@ -181,6 +185,9 @@ def band_power(cbp: tuple[np.ndarray, np.ndarray], n_samples: int, tempo: float 
 
 def features(P: np.ndarray) -> np.ndarray:
     """Band power rows -> weighted, normalised features (same rows)."""
+    P = np.nan_to_num(np.asarray(P, dtype=np.float64), nan=0.0, posinf=np.finfo(np.float64).max / (L2_NBANDS * 2), neginf=0.0)
+    if P.size > 0 and P.max() > 1e100:
+        P = P / P.max()
     P = np.maximum(P, P.max() * 1e-9 + 1e-20)
     E = 10.0 * np.log10(P)
 
@@ -352,6 +359,10 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
     clip = np.nan_to_num(np.asarray(clip, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
     if clip.ndim > 1:
         clip = clip.mean(axis=-1)
+    if clip.size > 0:
+        peak = float(np.max(np.abs(clip)))
+        if peak > 1.0:
+            clip = clip / peak
     n_null = max(2, int(n_null))
     t_lo, t_hi = int(t_lo), int(t_hi)
     tempos = tuple(float(x) for x in tempos)
