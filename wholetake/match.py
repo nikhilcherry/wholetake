@@ -149,9 +149,14 @@ def warp(F: np.ndarray, alpha: float) -> np.ndarray:
 
 def _regions(pieces, cw, ww, alpha, clip_s, rec_s) -> list[tuple[int, int]]:
     spans = []
+    alphas = {float(alpha), 1.0}
     for p in pieces:
-        b = float(np.median([ww[w].start - alpha * cw[c].start for c, w in p]))
-        spans.append((b - REGION_PAD_S, b + alpha * clip_s + REGION_PAD_S))
+        if not p:
+            continue
+        pts = [ww[w].start - a * cw[c].start for a in alphas for c, w in p] + [
+            ww[w].start + a * (clip_s - cw[c].start) for a in alphas for c, w in p
+        ]
+        spans.append((min(pts) - REGION_PAD_S, max(pts) + REGION_PAD_S))
     if not spans and rec_s <= WHOLE_RECORD_MAX_S:
         spans = [(0.0, rec_s)]
     spans.sort()
@@ -161,7 +166,14 @@ def _regions(pieces, cw, ww, alpha, clip_s, rec_s) -> list[tuple[int, int]]:
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
-    return [(max(0, int(a * FPS)), min(int(rec_s * FPS), int(b * FPS))) for a, b in merged]
+    n_frames = int(rec_s * FPS)
+    out = []
+    for a, b in merged:
+        r0 = max(0, min(n_frames, int(a * FPS)))
+        r1 = max(r0, min(n_frames, int(b * FPS)))
+        if r1 > r0:
+            out.append((r0, r1))
+    return out
 
 
 def _scan(Fc: np.ndarray, Fw: np.ndarray, regions, win=WIN, hop=HOP, starts=None):
