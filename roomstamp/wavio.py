@@ -8,19 +8,38 @@ from scipy.signal import resample_poly
 
 from .spec import FS
 
+MIN_SR = 8000
+MAX_SR = 384000
+MAX_RESAMPLE_FACTOR = 4096
+
 
 def read(path: str, fs: int = FS) -> np.ndarray:
+    if isinstance(fs, bool) or not isinstance(fs, (int, np.integer)) or not (MIN_SR <= int(fs) <= MAX_SR):
+        raise ValueError(f"invalid target sample rate fs={fs!r} (expected {MIN_SR}..{MAX_SR} Hz)")
+    fs = int(fs)
     with wave.open(path, "rb") as w:
         sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        if sw != 2:
+            raise ValueError(f"{path}: only 16-bit PCM supported (got {8 * sw}-bit)")
+        if ch < 1:
+            raise ValueError(f"{path}: invalid channel count {ch}")
+        if isinstance(sr, bool) or not isinstance(sr, (int, np.integer)) or not (MIN_SR <= int(sr) <= MAX_SR):
+            raise ValueError(f"{path}: unsupported sample rate {sr} Hz (expected {MIN_SR}..{MAX_SR} Hz)")
+        sr = int(sr)
+        if sr != fs:
+            g = int(np.gcd(sr, fs))
+            up, down = fs // g, sr // g
+            if max(up, down) > MAX_RESAMPLE_FACTOR:
+                raise ValueError(
+                    f"{path}: unsupported sample rate {sr} Hz for target {fs} Hz "
+                    f"(polyphase factor {max(up, down)} > {MAX_RESAMPLE_FACTOR})"
+                )
         raw = w.readframes(w.getnframes())
-    if sw != 2:
-        raise ValueError(f"{path}: only 16-bit PCM supported (got {8 * sw}-bit)")
     x = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0
     if ch > 1:
         x = x.reshape(-1, ch).mean(axis=1)
-    if sr != fs:
-        g = np.gcd(sr, fs)
-        x = resample_poly(x, fs // g, sr // g)
+    if sr != fs and len(x) > 0:
+        x = resample_poly(x, up, down)
     return x
 
 
