@@ -413,7 +413,7 @@ def _feed_env(path: str) -> tuple[np.ndarray, float]:
     import soundfile as sf
     parts, zi, ss, n = [], None, 0.0, 0
     for blk in sf.blocks(path, blocksize=ENV_HOP * 2000, dtype="float64", always_2d=True):
-        m = blk.mean(axis=1)
+        m = blk[:, 0] if blk.shape[1] == 1 else _downmix(blk, [], sr=FS)
         ss, n = ss + float(np.sum(m * m)), n + len(m)
         e, zi = _env(m, zi)
         parts.append(e)
@@ -527,7 +527,7 @@ def _read_feed(path: str, s0: int, s1: int) -> np.ndarray:
     x, sr = sf.read(path, start=s0, stop=s1, dtype="float64", always_2d=True)
     if sr != FS:
         raise ValueError(f"feed {path} is {sr} Hz, expected {FS}")
-    return x.mean(axis=1)
+    return _downmix(x, [], sr=sr)
 
 
 def _refine_piece_margins(clip_x: np.ndarray, feed: np.ndarray, sess_t_start: int, pieces: list[dict],
