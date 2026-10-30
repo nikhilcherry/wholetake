@@ -780,13 +780,18 @@ def merge_edits(layers: dict) -> tuple[list[dict], list[str]]:
     pool.sort(key=lambda e: (rank.get(e.get("source"), 9), e.get("clip_t", 0)))
     out: list[dict] = []
     for e in pool:
-        lo, hi = (e.get("clip_t_range") or [e["clip_t"], e["clip_t"]])
+        r_e = e.get("clip_t_range")
+        lo = r_e[0] if (r_e and len(r_e) >= 2 and r_e[0] is not None) else e["clip_t"]
+        hi = r_e[1] if (r_e and len(r_e) >= 2 and r_e[1] is not None) else e["clip_t"]
         dup = None
         for k in out:
+            r_k = k.get("clip_t_range")
+            k_lo = r_k[0] if (r_k and len(r_k) >= 2 and r_k[0] is not None) else k["clip_t"]
+            k_hi = r_k[1] if (r_k and len(r_k) >= 2 and r_k[1] is not None) else k["clip_t"]
             if (
                 rank[k["source"]] < rank[e["source"]]
                 and _kinds_compatible(k.get("kind"), e.get("kind"))
-                and lo - 2.0 <= k["clip_t"] <= hi + 2.0
+                and lo - 2.0 <= k_hi and k_lo <= hi + 2.0
             ):
                 dup = k
                 break
