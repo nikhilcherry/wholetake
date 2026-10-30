@@ -264,6 +264,8 @@ class Searcher:
     the same search, so the null absorbs the extra look-elsewhere."""
 
     def __init__(self, variants: list[Variant], n_blocks: int, pair: bool = True):
+        if not variants or any(len(v.F) < 2 for v in variants):
+            raise ValueError("variants must be non-empty and each variant must have at least 2 rows")
         self.variants = variants
         self.N = n_blocks
         self.pair = pair
@@ -386,10 +388,18 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
     t_lo, t_hi = int(t_lo), int(t_hi)
     tempos = tuple(float(x) for x in tempos)
     taus = tuple(float(x) for x in taus)
+    if not tempos or any(not math.isfinite(tp) or tp <= 0.0 for tp in tempos):
+        raise ValueError("tempos must be non-empty with all tempo > 0")
+    if not taus or any(not math.isfinite(tau) or tau < 0.0 for tau in taus):
+        raise ValueError("taus must be non-empty with all tau >= 0")
     dur = len(clip) / FS
+    if any(int(max(len(clip), int(MIN_CLIP_S * FS)) * tp // HOP) < 2 for tp in tempos):
+        raise ValueError("each tempo must produce at least 2 feature rows")
     if dur < MIN_CLIP_S:
         return {"verdict": "too short", "present": False, "clip_s": math.floor(dur * 10) / 10,
                 "note": f"blind envelope check needs >= {MIN_CLIP_S:.0f} s (>= 20 s for a confident verdict)"}
+    if any(int(len(clip) * tp // HOP) < 2 for tp in tempos):
+        raise ValueError("each tempo must produce at least 2 feature rows")
     if t_lo > t_hi:
         t_lo, t_hi = t_hi, t_lo
     need = int(np.ceil(dur * max(tempos) + MIN_PAD_S))
