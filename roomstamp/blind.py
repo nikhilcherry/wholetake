@@ -347,6 +347,8 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
         clip = clip.mean(axis=-1)
     n_null = max(2, int(n_null))
     t_lo, t_hi = int(t_lo), int(t_hi)
+    tempos = tuple(float(x) for x in tempos)
+    taus = tuple(float(x) for x in taus)
     dur = len(clip) / FS
     if dur < MIN_CLIP_S:
         return {"verdict": "too short", "present": False, "clip_s": round(dur, 1),
@@ -393,8 +395,8 @@ def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi:
         "recording_start_unix": round(start, 3),
         "recording_start_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(s_cs)))
         + f".{int(round((s_cs % 1) * 100)):02d}Z",
-        "venue_span_s": round(len(v.F) / HPS, 1), "clip_s": round(dur, 1), "tempo": v.tempo,
-        "reverb_tau_ms": v.tau * 10, "z": round(r["score"], 2), "sigma_over_null": round(float(sigma), 2),
+        "venue_span_s": round(len(v.F) / HPS, 1), "clip_s": round(dur, 1), "tempo": float(v.tempo),
+        "reverb_tau_ms": float(v.tau * 10), "z": round(r["score"], 2), "sigma_over_null": round(float(sigma), 2),
         "beats": f"{beats}/{len(null)}", "p_value": float(f"{p:.2g}"),
         "null_mean_max": [round(float(null.mean()), 2), round(float(null.max()), 2)],
         "stage": stage, "window": [t_lo, t_hi], "key_id": spec.key_id(key),
