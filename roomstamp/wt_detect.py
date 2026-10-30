@@ -1514,7 +1514,8 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     tries = []
     if "l1" in want:
         best = None
-        for s in [c for c in cands if c.feed_path][:MAX_SESSION_TRIES]:
+        l1_cands = [c for c in cands if c.feed_path][:MAX_SESSION_TRIES]
+        for s in l1_cands:
             try:
                 st, _ = run_l1(clip, s, key, W)
             except Exception:
@@ -1525,7 +1526,13 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
             if st["status"] == "present":
                 break
         if best is not None:
-            L["l1"], sl = best
+            L["l1"] = best[0]
+            if (
+                best[0].get("status") in ("present", "inconclusive")
+                or best[0].get("content_match")
+                or (sl in l1_cands)
+            ):
+                sl = best[1]
         elif cands:
             L["l1"] = _stage("skipped", summary="no session for this key has a usable clean feed")
         else:
