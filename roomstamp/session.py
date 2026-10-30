@@ -54,8 +54,15 @@ class Session:
         return r.get("ref_rms"), r.get("gain")
 
     def anchored_fraction(self, t0: float, t1: float) -> float:
-        ts = range(int(t0), int(t1) + 1)
-        return sum(bool((self.secs.get(t) or {}).get("anchored")) for t in ts) / max(1, len(ts))
+        lo, hi = int(t0), int(t1)
+        if hi < lo:
+            return 0.0
+        n_total = hi - lo + 1
+        n_anch = sum(
+            1 for t, r in self.secs.items()
+            if isinstance(t, int) and lo <= t <= hi and isinstance(r, dict) and bool(r.get("anchored"))
+        )
+        return n_anch / max(1, n_total)
 
     @classmethod
     def from_log(cls, path: str, venue: str | None = None) -> "Session":

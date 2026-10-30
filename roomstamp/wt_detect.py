@@ -316,10 +316,23 @@ class SessionLog:
     def dac_utc(self, t: int) -> float | None:
         i = t - self.t_start
         if 0 <= i < len(self.secs) and self.secs[i].get("t") == t:
-            return self.secs[i].get("dac_utc")
+            d = self.secs[i].get("dac_utc")
+            try:
+                f = float(d) if d is not None and not isinstance(d, bool) else None
+                if f is not None and np.isfinite(f):
+                    return f
+            except (TypeError, ValueError):
+                pass
         for s in self.secs:
             if s.get("t") == t:
-                return s.get("dac_utc")
+                d = s.get("dac_utc")
+                try:
+                    f = float(d) if d is not None and not isinstance(d, bool) else None
+                    if f is not None and np.isfinite(f):
+                        return f
+                except (TypeError, ValueError):
+                    pass
+                return None
         return None
 
     def wall(self, t_nominal: float) -> float:
@@ -329,10 +342,21 @@ class SessionLog:
         if d is not None:
             return float(d + (t_nominal - t_sec))
         if self.secs:
-            valid = [s for s in self.secs if s.get("dac_utc") is not None and s.get("t") is not None]
+            valid = []
+            for s in self.secs:
+                try:
+                    dv = s.get("dac_utc")
+                    tv = s.get("t")
+                    if dv is None or tv is None or isinstance(dv, bool) or isinstance(tv, bool):
+                        continue
+                    df, tf = float(dv), float(tv)
+                    if np.isfinite(df) and np.isfinite(tf):
+                        valid.append((tf, df))
+                except (TypeError, ValueError):
+                    continue
             if valid:
-                nearest = min(valid, key=lambda s: abs(int(s["t"]) - t_sec))
-                return float(nearest["dac_utc"]) + (t_nominal - float(nearest["t"]))
+                nearest_t, nearest_d = min(valid, key=lambda pair: abs(int(pair[0]) - t_sec))
+                return float(nearest_d + (t_nominal - nearest_t))
         return float(t_nominal)
 
     def session(self, t0_offset_s: int = 0) -> Session:
@@ -340,14 +364,21 @@ class SessionLog:
         per-second log records, so S2 re-renders with exactly the randomness the emitter used
         (anchored seconds only, never fetched) and seeds the stamper from the logged state."""
         secs = {int(s["t"]): s for s in self.secs}
-        if self.header.get("warmup"):
-            secs.setdefault(int(self.header["warmup"]["t"]), self.header["warmup"])
+        warmup = self.header.get("warmup")
+        if isinstance(warmup, dict):
+            try:
+                secs.setdefault(int(warmup["t"]), warmup)
+            except (KeyError, TypeError, ValueError):
+                pass
         return Session(key_id=self.key_id, t_start=self.t_start + t0_offset_s, params=self.params,
                        feed=self.feed_path or "", venue=self.venue_name, secs=secs, path=None)
 
 
+MAX_SESSION_SPAN_S = 86400 * 7
+
+
 def load_session_log(path: str, venue_name: str) -> SessionLog:
-    header, secs = None, []
+    header, raw_secs = None, []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -364,24 +395,42 @@ def load_session_log(path: str, venue_name: str) -> SessionLog:
                     header = r
             elif r.get("type") == "sec":
                 try:
+                    if isinstance(r.get("t"), bool):
+                        continue
                     r["t"] = int(r["t"])
-                    secs.append(r)
                 except (KeyError, TypeError, ValueError):
                     continue
+                if "dac_utc" in r and r["dac_utc"] is not None:
+                    try:
+                        if isinstance(r["dac_utc"], bool):
+                            r["dac_utc"] = None
+                        else:
+                            d_val = float(r["dac_utc"])
+                            r["dac_utc"] = d_val if np.isfinite(d_val) else None
+                    except (TypeError, ValueError):
+                        r["dac_utc"] = None
+                raw_secs.append(r)
     if header is None:
         raise ValueError(f"{path}: no session header")
     if header.get("spec") not in (None, spec.SPEC_VERSION):
         raise ValueError(f"{path}: spec {header.get('spec')!r}, wt-detect speaks {spec.SPEC_VERSION!r}")
-    secs.sort(key=lambda s: s["t"])
+    t0 = int(header["t_start"])
+    by_t: dict[int, dict] = {}
+    for s in raw_secs:
+        if t0 <= s["t"] <= t0 + MAX_SESSION_SPAN_S:
+            by_t[s["t"]] = s
+    secs = [by_t[t] for t in sorted(by_t)]
     feed = header.get("feed_wav")
     feed_path = os.path.join(os.path.dirname(os.path.abspath(path)), feed) if feed else None
     if feed_path and not os.path.isfile(feed_path):
         feed_path = None
-    t0 = int(header["t_start"])
     t_end = int(secs[-1]["t"]) + 1 if secs else t0
     if feed_path and not secs:
         import soundfile as sf
-        t_end = t0 + int(np.ceil(sf.info(feed_path).frames / FS))
+        try:
+            t_end = t0 + max(0, int(np.ceil(sf.info(feed_path).frames / FS)))
+        except Exception:
+            t_end = t0
     p = engine.StampParams(**{k: v for k, v in header["params"].items() if k in engine.StampParams.__dataclass_fields__})
     return SessionLog(sid=os.path.splitext(os.path.basename(path))[0], path=os.path.abspath(path), header=header,
                       secs=secs, t_start=t0, t_end=t_end, key_id=header["key_id"], params=p, feed_path=feed_path,
@@ -1609,15 +1658,17 @@ def main(argv=None) -> None:
     bad = set(a.layers.split(",")) - {"l1", "l2", "wt"} if a.layers != "auto" else set()
     if bad:
         ap.error(f"unknown layers: {sorted(bad)}")
+    if a.around is not None:
+        try:
+            parse_time(a.around)
+        except ValueError as e:
+            ap.error(f"invalid --around time {a.around!r}: {e}")
     try:
         doc = run(a.clip, out_path=a.out, venue_dir=a.venue, key_file=a.key_file, session_log=a.session,
                   around=a.around, witness=a.witness, layers=a.layers, fast=a.fast, confirm=a.confirm,
                   merge=a.merge, l2_timeout_s=a.l2_timeout, venue_name=a.venue_name,
                   max_duration_s=a.max_duration, witness_root=a.witness_root, allow_network=a.allow_network,
                   argv=["wt-detect"] + argv)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"wt-detect: {e}", file=sys.stderr)
-        sys.exit(2)
     except Exception:
         tb = traceback.format_exc()
         doc = _empty_doc(["wt-detect"] + argv)
