@@ -160,7 +160,16 @@ def clip_band_power(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     each frame's centre in clip samples. Not the spec's IIR filters: those overlap so much that
     neighbouring bands (opposite signs) cancel, and measuring with them loses ~1/3 of z."""
     hop = HOP // 2
-    x = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    x = np.asarray(x, dtype=np.float64)
+    if x.ndim not in (1, 2) or (x.ndim == 2 and x.shape[1] == 0):
+        raise ValueError(f"clip must be a 1D mono or non-empty 2D multi-channel array, got shape {x.shape}")
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    if x.ndim == 2:
+        if x.size > 0:
+            peak0 = float(np.max(np.abs(x)))
+            if peak0 > 1.0:
+                x = x / peak0
+        x = x.mean(axis=-1)
     if len(x) < STFT_WIN:
         return np.zeros((0, L2_NBANDS)), np.zeros(0)
     peak = float(np.max(np.abs(x)))
@@ -356,13 +365,16 @@ def locate(scan: dict, F: np.ndarray, T: np.ndarray) -> dict:
 def detect(clip: np.ndarray, key: bytes, src: RandomnessSource, t_lo: int, t_hi: int, n_null: int = 200,
            tempos=TEMPOS, taus=TAUS, seed: int | None = None, pair: bool = True) -> dict:
     t0 = time.time()
-    clip = np.nan_to_num(np.asarray(clip, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
-    if clip.ndim > 1:
-        clip = clip.mean(axis=-1)
+    clip = np.asarray(clip, dtype=np.float64)
+    if clip.ndim not in (1, 2) or (clip.ndim == 2 and clip.shape[1] == 0):
+        raise ValueError(f"clip must be a 1D mono or non-empty 2D multi-channel array, got shape {clip.shape}")
+    clip = np.nan_to_num(clip, nan=0.0, posinf=0.0, neginf=0.0)
     if clip.size > 0:
         peak = float(np.max(np.abs(clip)))
         if peak > 1.0:
             clip = clip / peak
+    if clip.ndim == 2:
+        clip = clip.mean(axis=-1)
     n_null = max(2, int(n_null))
     t_lo, t_hi = int(t_lo), int(t_hi)
     tempos = tuple(float(x) for x in tempos)
