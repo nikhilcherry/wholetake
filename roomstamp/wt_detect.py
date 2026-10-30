@@ -1498,7 +1498,7 @@ def run(clip_path: str, *, out_path: str | None = None, venue_dir: str = "logs",
     run_l2_now = l2_skip is None and (explicit_l2 or (layers == "auto" and (not l1_locked or confirm)))
     if l2_skip is not None:
         L["l2"] = prevL.get("l2") if (prevL.get("l2") and not explicit_l2) else _stage("skipped", summary=l2_skip)
-    elif run_l2_now and fast and not explicit_l2:
+    elif run_l2_now and fast and not explicit_l2 and clip.duration_s >= L2_MIN_CLIP_S:
         L["l2"] = _stage("pending", "s3", "queued: run again with --layers l2 --merge")
     elif run_l2_now:
         try:
